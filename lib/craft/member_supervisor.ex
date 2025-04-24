@@ -44,7 +44,10 @@ defmodule Craft.MemberSupervisor do
           opts |> Keyword.merge(defaults) |> Map.new()
       end
 
-    DynamicSupervisor.start_child(Craft.Supervisor, {__MODULE__, args})
+    case DynamicSupervisor.start_child(Craft.Supervisor, {__MODULE__, args}) do
+      {:ok, pid} -> {:ok, pid}
+      {:error, {:already_started, pid}} -> {:ok, pid}
+    end
   end
 
   def stop_member(name) do

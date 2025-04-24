@@ -812,13 +812,7 @@ defmodule Craft.Consensus do
       {:keep_state_and_data, [{:reply, from, {:error, :config_change_in_progress}}]}
     else
       data = LeaderState.add_node(data, node, from, Persistence.latest_index(data.persistence) + 1)
-
-      entry =
-        %MembershipEntry{
-          term: data.current_term,
-          members: data.members
-        }
-
+      entry = %MembershipEntry{term: data.current_term, members: data.members}
       data = %State{data | persistence: Persistence.append(data.persistence, entry)}
 
       MemberCache.update(data)
@@ -832,13 +826,7 @@ defmodule Craft.Consensus do
       {:keep_state_and_data, [{:reply, from, {:error, :config_change_in_progress}}]}
     else
       data = LeaderState.remove_node(data, node, from, Persistence.latest_index(data.persistence) + 1)
-
-      entry =
-        %MembershipEntry{
-          term: data.current_term,
-          members: data.members
-        }
-
+      entry = %MembershipEntry{term: data.current_term, members: data.members}
       data = %State{data | persistence: Persistence.append(data.persistence, entry)}
 
       MemberCache.update(data)

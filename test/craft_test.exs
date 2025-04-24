@@ -39,5 +39,14 @@ defmodule CraftTest do
 
     members = name |> Craft.state() |> Map.keys() |> MapSet.new()
     assert members == MapSet.new([new_node | nodes])
+
+    # already started node
+    Craft.remove_member(name, new_node)
+    Craft.add_member(name, new_node)
+
+    wait_until(nexus, {Stability, :all})
+
+    members = name |> Craft.state() |> Map.keys() |> MapSet.new()
+    assert members == MapSet.new([new_node | nodes])
   end
 end

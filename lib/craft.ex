@@ -31,7 +31,17 @@ defmodule Craft do
   @type query() :: any()
   @type log_index() :: non_neg_integer()
 
-  # opts: [:log_module | :data_dir, ...]
+  @doc """
+  Starts a raft group on a list of erlang nodes.
+
+  `nodes` must be an accessible list of erlang nodes, and
+  `machine` must be a module that uses `Craft.Machine` for functionality and implements it's behaviour.
+
+  ### Opts
+    - `:log_module` - Allows caller to provide a custom log module for the nodes in this group.
+    - `:persistence` - Configure how the WAL is persisted with a {module, args} tuple where module aheres to the `Craft.Persistence` behaviour
+    - `:data_dir` - Customizes where rocksdb stores its WAL file.
+  """
   def start_group(name, nodes, machine, opts \\ []) do
     for node <- nodes do
       :pong = Node.ping(node)
@@ -43,34 +53,33 @@ defmodule Craft do
     end
   end
 
+  @doc "Stops all members of the raft group"
   def stop_group(name) do
-    case with_leader_redirect(name, &configuration(name, &1)) do
-      {:ok, %{members: members}} ->
-        results =
-          members
-          |> Members.all_nodes()
-          |> Map.new(fn node ->
-            result =
-              try do
-                :rpc.call(node, __MODULE__, :stop_member, [name])
-              catch :exit, e ->
-                e
-              end
+    with {:ok, %{members: members}} <- with_leader_redirect(name, &configuration(name, &1)) do
+      results =
+        members
+        |> Members.all_nodes()
+        |> Map.new(fn node ->
+          result =
+            try do
+              :rpc.call(node, __MODULE__, :stop_member, [name])
+            catch :exit, e ->
+              e
+            end
 
-            {node, result}
-          end)
+          {node, result}
+        end)
 
-        if Enum.all?(results, fn {_node, result} -> result == :ok end) do
-          :ok
-        else
-          results
-        end
-
-      error ->
-        error
+      if Enum.all?(results, &match?({_, :ok}, &1)), do: :ok, else: results
     end
   end
 
+  @doc """
+  Adds an erlang node to an existing raft group.
+
+  This function will also ensure the supervised processes for this raft group are
+  running on the node to add before it tries to connect it.
+  """
   def add_member(name, node) do
     :pong = Node.ping(node)
 
@@ -85,30 +94,39 @@ defmodule Craft do
       {:module, ^module} = :rpc.call(node, Code, :ensure_loaded, [module])
     end
 
+    # The nodes we provide to the new member here will eventually be overwritten when
+    # the new member processes the MembershipEntry as it catches up to the leader.
     {:ok, _pid} = :rpc.call(node, __MODULE__, :start_member, [name, members.voting_nodes, machine_module, Keyword.new(opts)])
 
     with_leader_redirect(name, &Consensus.add_member(name, &1, node))
-
-    #
-    # the nodes we provide to the new member here will eventually be overwritten when
-    # the new member processes the MembershipEntry as it catches up to the leader
-    #
-    # TODO: be ok with the member already being started (maybe it wasn't able to catch up fast enough last time)
-    #
   end
 
+  @doc "Removed a node from membership in a raft group, but doesn't stop its processes."
   def remove_member(name, node) do
     with_leader_redirect(name, &Consensus.remove_member(name, &1, node))
   end
 
+  @doc "Selects a new node to become the leader of a raft group."
   def transfer_leadership(name, to_node) do
     with_leader_redirect(name, &Consensus.transfer_leadership(name, &1, to_node))
   end
 
+  @doc "Starts the supervised processes for the named raft group on the node"
   defdelegate start_member(name, nodes, machine, opts), to: Craft.MemberSupervisor
+  @doc "Stops the supervised processes for the named raft group on the node"
   defdelegate stop_member(name), to: Craft.MemberSupervisor
+  @doc "Initializes the MemberCache for a raft group with the given nodes"
   defdelegate discover(name, nodes), to: Craft.MemberCache
 
+  @doc """
+  Commits a command onto the log and executes the `c:command/3` callback on the configured
+  state machine set for the raft group.
+
+  This does not return until it has been accepted by a quarum of nodes.
+
+  ### Opts
+  - `timeout` - (default: 5_000) the time before we return a timeout error
+  """
   def command(command, name, opts \\ []) do
     with_leader_redirect(name, &Machine.command(name, &1, command, opts))
   end
@@ -126,6 +144,20 @@ defmodule Craft do
   #         - it'll copy the machine's state to a new process, which could be worth it in some scenarios
   #
 
+  @doc """
+  Runs a read-only query against the machine state without committing a log message.
+
+  Depending on the `consistency` option's value, queries can access other nodes than the leader to
+  spread load. This is in contrast to a query that always addresses the leader since it can modify state.
+
+  ### Opts
+  - `:consistency` - Configures the type of consistency guarentees for the query
+
+  ### Consistency values
+  - `:linearizable` - query is run on the leader
+  - `:eventual` - query is run on a random node
+  - `{:eventual, node}` - query is run on the given node
+  """
   def query(query, name, opts \\ []) do
     consistency = Keyword.get(opts, :consistency, :linearizable)
 
@@ -149,6 +181,11 @@ defmodule Craft do
             {:error, :unknown_group}
         end
     end
+  end
+
+  @doc "Request for a differnt leader than the current."
+  def step_down(name, node) do
+    :gen_statem.cast({Consensus.name(name), node}, :step_down)
   end
 
   defp with_leader_redirect(name, func) do
@@ -191,37 +228,6 @@ defmodule Craft do
     end
   end
 
-  def step_down(name, node) do
-    :gen_statem.cast({Consensus.name(name), node}, :step_down)
-  end
-
-  def start_dev_cluster(num \\ 5) do
-    {name, nodes} =
-      num
-      |> Craft.TestCluster.spawn_nodes()
-      |> start_dev_consensus_group()
-
-    discover(name, nodes)
-
-    name
-  end
-
-  def start_tmux_cluster do
-    nodes = for i <- 2..5, do: :"#{i}@127.0.0.1"
-    name = "abc"
-
-    start_group(name, nodes, Craft.RocksDBMachine)
-
-    {name, nodes}
-  end
-
-  def start_dev_consensus_group(nodes) do
-    name = :crypto.strong_rand_bytes(3) |> Base.encode16()
-
-    start_group(name, nodes, Craft.SimpleMachine)
-
-    {name, nodes}
-  end
 
   @doc false
   def state(name, node) do
