@@ -58,7 +58,7 @@ defmodule Craft.Consensus.State do
     state =
       %__MODULE__{
         name: name,
-        members: members,
+        members: Members.new(nodes),
         persistence: persistence,
         machine: machine
       }

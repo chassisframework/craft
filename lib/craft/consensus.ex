@@ -117,7 +117,7 @@ defmodule Craft.Consensus do
   def init(args) do
     Logger.metadata(name: args.name, node: node())
 
-    data = State.new(args.name, args[:nodes], args.persistence, args.machine)
+    data = State.new(args.name, args.nodes, args.persistence, args.machine)
 
     MemberCache.update(data)
 
@@ -289,46 +289,13 @@ defmodule Craft.Consensus do
 
     MemberCache.update(data)
 
-    {:keep_state, data}
-  end
-
-  def receiving_snapshot(:cast, %InstallSnapshot{} = install_snapshot, %State{} = data) do
-    data =
-      %State{data | leader_id: install_snapshot.leader_id}
-      |> State.set_current_term(install_snapshot.term)
-
-    MemberCache.update(data)
+    persistence = Persistence.truncate(data.persistence, install_snapshot.log_index, install_snapshot.log_entry)
 
     if data.machine.__craft_mutable__() do
-      case data.incoming_snapshot_transfer do
-        {_old_pid, _old_transfer} ->
-          # FIXME: abort current transfer
-          :abort
-
-        nil ->
-          :noop
-      end
-
       {:ok, data_dir} = Machine.prepare_to_receive_snapshot(data.name)
 
-      me = self()
-      {:ok, pid} =
-        SnapshotServerClient.start_link(
-          install_snapshot.snapshot_transfer,
-          data_dir,
-          fn :ok ->
-            :gen_statem.cast(me, {:download_succeeded, install_snapshot})
-          end
-        )
-
-      {:keep_state, %State{data | incoming_snapshot_transfer: {pid, install_snapshot.snapshot_transfer}}}
-    else
-      receiving_snapshot(:cast, {:download_succeeded, install_snapshot}, data)
+      SnapshotTransfer.receive(install_snapshot.snapshot_transfer, data_dir)
     end
-  end
-
-  def receiving_snapshot(:cast, {:download_succeeded, %InstallSnapshot{} = install_snapshot}, %State{} = data) do
-    persistence = Persistence.truncate(data.persistence, install_snapshot.log_index, install_snapshot.log_entry)
 
     :ok = Machine.receive_snapshot(data.name, install_snapshot)
 
@@ -721,7 +688,6 @@ defmodule Craft.Consensus do
           all_followers_caught_up = Enum.empty?(data.members.catching_up_nodes)
           # log_too_big = Persistence.log_size() > 100mb or 100 entries, etc
 
-          # Machine.commit_index_bumped(data, false)
           Machine.commit_index_bumped(data, no_snapshot_transfers && all_followers_caught_up)
         end
 
@@ -822,7 +788,7 @@ defmodule Craft.Consensus do
     config =
       data
       |> Map.take([:members, :nexus_pid])
-      |> Map.merge(%{machine_module: data.machine, persistence_module: data.persistence.module})
+      |> Map.merge(%{machine_module: data.machine, log_module: data.persistence.module})
 
     {:keep_state_and_data, [{:reply, from, {:ok, config}}]}
   end
@@ -857,6 +823,12 @@ defmodule Craft.Consensus do
 
   def leader({:call, from}, :state, data) do
     {:keep_state_and_data, [{:reply, from, {data, Persistence.dump(data.persistence)}}]}
+  end
+
+  def leader({:call, from}, {:snapshot_ready, index, path_or_content}, data) do
+    data = State.snapshot_ready(data, index, path_or_content)
+
+    {:keep_state, data, [{:reply, from, :ok}]}
   end
 
   def leader(type, msg, data) do

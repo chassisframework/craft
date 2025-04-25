@@ -29,8 +29,8 @@ defmodule Craft.Machine do
     @type data_dir :: Path.t()
 
     @callback last_applied_log_index(private()) :: Craft.log_index() | nil
-    @callback snapshot(private()) :: {index :: pos_integer(), snapshot(), private()} | nil
-    @callback prepare_to_receive_snapshot(private()) :: {:ok, data_dir, private()}
+    @callback snapshot(Craft.log_index(), private()) :: {:ok, snapshot()}
+    @callback prepare_to_receive_snapshot(private()) :: {:ok, data_dir, snapshot()}
     @callback receive_snapshot(private()) :: {:ok, private()}
   end
 
@@ -236,13 +236,34 @@ defmodule Craft.Machine do
     # the provided index, and the user will call back when it's done (and we'll send a message
     # to the consensus module to tell it that a snapshot at the given index completed)
     #
-    # should probably provide sync/async semantics as well
+    # should probably provide sync/async semantics as well as ability to store small snapshots directly in the log
     #
     # only snapshot up to one entry before the latest, since we need the prev log entry to create AppendEntries
+
+    if should_snapshot? do
+      if state.module.__craft_mutable__() do
+        snapshot_index = new_commit_index - 1
+        snapshot_dir = state.module.snapshot(snapshot_index, state.private)
+
+        :ok = Consensus.snapshot_ready(state.name, snapshot_index, snapshot_dir)
+      else
+        snapshot_index = last_applied_log_index
+        snapshot_content = state.private
+
+        :ok = Consensus.snapshot_ready(state.name, snapshot_index, snapshot_content)
+      end
+    end
 
     state =
       Enum.reduce(last_applied_log_index+1..new_commit_index//1, state, fn index, state ->
         case Persistence.fetch(log, index) do
+          {:ok, %SnapshotEntry{} = entry} ->
+            if state.module.__craft_mutable__() do
+              state
+            else
+              %State{state | private: entry.machine_private}
+            end
+
           {:ok, %EmptyEntry{}} ->
             state
 
@@ -281,42 +302,7 @@ defmodule Craft.Machine do
         end
       end)
 
-    private =
-      if should_snapshot? do
-        if state.module.__craft_mutable__() do
-          case state.module.snapshot(state.private) do
-            {index, path, private} ->
-              files =
-                path
-                |> ls_flat()
-                |> Enum.map(fn file ->
-                  %RemoteFile{
-                    name: Path.relative_to(file, path),
-                    md5: md5(file),
-                    byte_size: File.stat!(file).size
-                  }
-                end)
-
-              relative_path = Path.relative_to(path, Configuration.data_dir())
-
-              :ok = Consensus.snapshot_ready(state.name, index, {relative_path, files})
-
-              private
-
-            # machine decided not to snapshot (perhaps no commands have run)
-            _ ->
-              state.private
-          end
-        else
-          :ok = Consensus.snapshot_ready(state.name, state.last_applied, state.module.snapshot(state.private))
-
-          state.private
-        end
-      else
-        state.private
-      end
-
-    {:noreply, %State{state | last_applied: new_commit_index, private: private}}
+    {:noreply, %State{state | last_applied: new_commit_index}}
   end
 
   #
@@ -391,29 +377,6 @@ defmodule Craft.Machine do
     end
   end
 
-  @impl true
-  def handle_call({:init_or_restore, log}, _from, state) do
-    {last_applied, private} =
-      if state.module.__craft_mutable__() do
-        {:ok, private} = state.module.init(state.name)
-        last_applied = state.module.last_applied_log_index(private)
-
-        {last_applied, private}
-      else
-        case Persistence.first(log) do
-          {index, %SnapshotEntry{} = snapshot} ->
-            {index, snapshot.machine_private}
-
-          _ ->
-            {:ok, private} = state.module.init(state.name)
-
-            {0, private}
-        end
-      end
-
-    {:reply, :ok, %State{state | last_applied: last_applied, private: private}}
-  end
-
   # delete on-disk machine files etc...
   @impl true
   def handle_call(:prepare_to_receive_snapshot, _from, state) do
@@ -427,7 +390,7 @@ defmodule Craft.Machine do
     {private, last_applied} =
       if state.module.__craft_mutable__() do
         private = state.module.receive_snapshot(state.private)
-        last_applied = state.module.last_applied_log_index(private)
+        last_applied = state.module.last_applied_log_index(state.private)
 
         {private, last_applied}
       else

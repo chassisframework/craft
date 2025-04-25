@@ -3,6 +3,7 @@ defmodule Craft.Log.SnapshotEntry do
 
   defstruct [
     :term,
+    :prev_entry_term,
     :members,
     :machine_private # contains private machine state for log-stored snapshot, nil otherwise
   ]

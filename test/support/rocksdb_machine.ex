@@ -1,8 +1,6 @@
 defmodule Craft.RocksDBMachine do
   use Craft.Machine, mutable: true
 
-  alias Craft.Configuration
-
   @log_index_column_family {~c"log_index", []}
   @log_index_key "log_index"
 
