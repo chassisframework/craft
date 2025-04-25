@@ -802,7 +802,7 @@ defmodule Craft.Consensus do
     config =
       data
       |> Map.take([:members, :nexus_pid])
-      |> Map.merge(%{machine_module: data.machine, log_module: data.persistence.module})
+      |> Map.merge(%{machine_module: data.machine, persistence_module: data.persistence.module})
 
     {:keep_state_and_data, [{:reply, from, {:ok, config}}]}
   end

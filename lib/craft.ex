@@ -35,10 +35,9 @@ defmodule Craft do
   Starts a raft group on a list of erlang nodes.
 
   `nodes` must be an accessible list of erlang nodes, and
-  `machine` must be a module that uses `Craft.Machine` for functionality and implements it's behaviour.
+  `machine` must be a module that uses `Craft.Machine` for functionality and implements its behaviour.
 
   ### Opts
-    - `:log_module` - Allows caller to provide a custom log module for the nodes in this group.
     - `:persistence` - Configure how the WAL is persisted with a {module, args} tuple where module aheres to the `Craft.Persistence` behaviour
     - `:data_dir` - Customizes where rocksdb stores its WAL file.
   """
@@ -90,7 +89,7 @@ defmodule Craft do
        machine_module: machine_module
      }, opts} = Map.split(config, [:members, :machine_module])
 
-    for module <- [__MODULE__, machine_module, Map.get(opts, :log_module)] do
+    for module <- [__MODULE__, machine_module] do
       {:module, ^module} = :rpc.call(node, Code, :ensure_loaded, [module])
     end
 
@@ -101,7 +100,7 @@ defmodule Craft do
     with_leader_redirect(name, &Consensus.add_member(name, &1, node))
   end
 
-  @doc "Removed a node from membership in a raft group, but doesn't stop its processes."
+  @doc "Removes a node from membership in a raft group, but doesn't stop its processes."
   def remove_member(name, node) do
     with_leader_redirect(name, &Consensus.remove_member(name, &1, node))
   end
@@ -122,7 +121,7 @@ defmodule Craft do
   Commits a command onto the log and executes the `c:command/3` callback on the configured
   state machine set for the raft group.
 
-  This does not return until it has been accepted by a quarum of nodes.
+  This does not return until it has been accepted by a quorum of nodes.
 
   ### Opts
   - `timeout` - (default: 5_000) the time before we return a timeout error
@@ -183,7 +182,7 @@ defmodule Craft do
     end
   end
 
-  @doc "Request for a differnt leader than the current."
+  @doc "Requests a different leader than the current."
   def step_down(name, node) do
     :gen_statem.cast({Consensus.name(name), node}, :step_down)
   end
