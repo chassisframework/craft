@@ -11,13 +11,29 @@ defmodule CraftTest do
     assert {:ok, 123} = SimpleMachine.get(name, :a)
   end
 
-  nexus_test "requests timeout when server takes too long", %{name: name, nexus: nexus} do
-    wait_until(nexus, {Stability, :all})
+  nexus_test "query/3", %{name: name, nodes: nodes, nexus: nexus} do
+    %{leader: leader} = wait_until(nexus, {Stability, :all})
 
+    # assert timeout on when no network
     nemesis(nexus, fn _ -> :drop end)
+    assert {:error, :timeout} = Craft.query({:get, :a}, name, timeout: 1)
 
-    assert {:error, :timeout} = SimpleMachine.put(name, :a, 123, timeout: 1)
-    assert {:error, :timeout} = SimpleMachine.get(name, :a, timeout: 1)
+    # assert leader doesn't need to contact other nodes in eventual mode
+    assert {:ok, nil} = Craft.query({:get, :a}, name, consistency: {:eventual, :leader})
+
+    # assert returns out of date value on isolated node in :eventual mode
+    isolated_node = Enum.random(nodes --  [leader])
+    nemesis(nexus, fn 
+      {_, from, to, _} when isolated_node in [to, from] -> :drop 
+      _event -> :forward 
+    end)
+    assert :ok = SimpleMachine.put(name, :a, 123)
+    assert {:ok, 123} = Craft.query({:get, :a}, name)
+    assert {:ok, nil} = Craft.query({:get, :a}, name, consistency: {:eventual, {:node, isolated_node}})
+
+    # assert successful linearizable query when network returns
+    nemesis(nexus, fn _ -> :forward end)
+    assert {:ok, 123} = Craft.query({:get, :a}, name, consistency: :linearizable)
   end
 
 

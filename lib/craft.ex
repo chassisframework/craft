@@ -156,7 +156,8 @@ defmodule Craft do
   ### Consistency values
   - `:linearizable` - query is run on the leader
   - `:eventual` - query is run on a random node
-  - `{:eventual, node}` - query is run on the given node
+  - `{:eventual, :leader}` - query is run on the leader without checking for quorum before returning result
+  - `{:eventual, {:node, node}}` - query is run on the given node without linearizable guarentees
   """
   def query(query, name, opts \\ []) do
     {consistency, opts} = Keyword.pop(opts, :consistency, :linearizable)
@@ -165,7 +166,10 @@ defmodule Craft do
       :linearizable ->
         with_leader_redirect(name, &Machine.query(name, &1, query, consistency, opts))
 
-      {:eventual, node} ->
+      {:eventual, :leader} ->
+        with_leader_redirect(name, &Machine.query(name, &1, query, :eventual, opts))
+
+      {:eventual, {:node, node}} ->
         Machine.query(name, node, query, :eventual, opts)
 
       :eventual ->
@@ -227,7 +231,6 @@ defmodule Craft do
         reply
     end
   end
-
 
   @doc false
   def state(name, node) do
