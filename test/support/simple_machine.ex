@@ -4,12 +4,12 @@ defmodule Craft.SimpleMachine do
 
   @behaviour TestModel
 
-  def put(name, k, v) do
-    Craft.command({:put, k, v}, name)
+  def put(name, k, v, opts \\ []) do
+    Craft.command({:put, k, v}, name, opts)
   end
 
-  def get(name, k) do
-    Craft.query({:get, k}, name, consistency: :linearizable)
+  def get(name, k, opts \\ []) do
+    Craft.query({:get, k}, name, opts)
   end
 
   @impl TestModel

@@ -11,6 +11,16 @@ defmodule CraftTest do
     assert {:ok, 123} = SimpleMachine.get(name, :a)
   end
 
+  nexus_test "requests timeout when server takes too long", %{name: name, nexus: nexus} do
+    wait_until(nexus, {Stability, :all})
+
+    nemesis(nexus, fn _ -> :drop end)
+
+    assert {:error, :timeout} = SimpleMachine.put(name, :a, 123, timeout: 1)
+    assert {:error, :timeout} = SimpleMachine.get(name, :a, timeout: 1)
+  end
+
+
   nexus_test "leadership transfer", %{nodes: nodes, name: name, nexus: nexus} do
     %{leader: leader} = wait_until(nexus, {Stability, :all})
 

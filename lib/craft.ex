@@ -151,6 +151,7 @@ defmodule Craft do
 
   ### Opts
   - `:consistency` - Configures the type of consistency guarentees for the query
+  - `timeout` - (default: 5_000) the time before we return a timeout error
 
   ### Consistency values
   - `:linearizable` - query is run on the leader
@@ -158,21 +159,21 @@ defmodule Craft do
   - `{:eventual, node}` - query is run on the given node
   """
   def query(query, name, opts \\ []) do
-    consistency = Keyword.get(opts, :consistency, :linearizable)
+    {consistency, opts} = Keyword.pop(opts, :consistency, :linearizable)
 
     case consistency do
       :linearizable ->
-        with_leader_redirect(name, &Machine.query(name, &1, query, consistency))
+        with_leader_redirect(name, &Machine.query(name, &1, query, consistency, opts))
 
       {:eventual, node} ->
-        Machine.query(name, node, query, :eventual)
+        Machine.query(name, node, query, :eventual, opts)
 
       :eventual ->
         case MemberCache.get(name) do
           {:ok, _leader, members} ->
             node = Enum.random(members)
 
-            Machine.query(name, node, query, consistency)
+            Machine.query(name, node, query, consistency, opts)
 
           :not_found ->
             Logger.error("No known nodes for group '#{inspect(name)}', have you called Craft.discover/2?")
