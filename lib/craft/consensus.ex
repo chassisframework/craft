@@ -377,7 +377,7 @@ defmodule Craft.Consensus do
         {true, data}
       else
         case Persistence.fetch(data.persistence, append_entries.prev_log_index) do
-          {:ok, %{term: ^prev_log_term}} ->
+          {:ok, %{term: ^prev_log_term} = e} ->
             rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
 
             persistence =

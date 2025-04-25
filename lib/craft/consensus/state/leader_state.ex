@@ -290,7 +290,7 @@ defmodule Craft.Consensus.State.LeaderState do
       %__MODULE__{
         state.leader_state |
         snapshot_transfers: snapshot_transfers,
-        match_indices: Map.put(state.leader_state.next_indices, results.from, results.latest_index),
+        match_indices: Map.put(state.leader_state.match_indices, results.from, results.latest_index),
         next_indices: Map.put(state.leader_state.next_indices, results.from, results.latest_index + 1)
       }
 
