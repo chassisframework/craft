@@ -351,6 +351,19 @@ defmodule Craft.Machine do
     {:noreply, state}
   end
 
+  def handle_cast({{:query, {:eventual, :leader}}, {from, _ref} = id, query}, state) do
+    if state.role == :leader do
+      send(from, {id, state.module.query(query, state.private)})
+    else
+      case Craft.MemberCache.get(state.name) do
+        {:ok, leader, _members} -> send(from, {id, {:error, {:not_leader, leader}}})
+        :not_found -> send(from, {id, {:error, :unknown_leader}})
+      end
+    end
+
+    {:noreply, state}
+  end
+
   def handle_cast({{:query, :eventual}, {from, _ref} = id, query}, state) do
     result = state.module.query(query, state.private)
 

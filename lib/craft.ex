@@ -167,7 +167,7 @@ defmodule Craft do
         with_leader_redirect(name, &Machine.query(name, &1, query, consistency, opts))
 
       {:eventual, :leader} ->
-        with_leader_redirect(name, &Machine.query(name, &1, query, :eventual, opts))
+        with_leader_redirect(name, &Machine.query(name, &1, query, {:eventual, :leader}, opts))
 
       {:eventual, {:node, node}} ->
         Machine.query(name, node, query, :eventual, opts)
