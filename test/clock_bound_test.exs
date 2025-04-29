@@ -1,8 +1,10 @@
 defmodule ClockBoundClientTest do
   use ExUnit.Case
 
+  alias Craft.ClockBound.Client
+
   setup do
-    monotonic_time = ClockBound.Client.monotonic_time()
+    monotonic_time = Client.monotonic_time()
     {as_of_s, as_of_ns} = {div(monotonic_time, 1_000_000_000), rem(monotonic_time, 1_000_000_000)}
     void_after_s = as_of_s + 60
     void_after_ns = as_of_ns
@@ -63,35 +65,35 @@ defmodule ClockBoundClientTest do
     {:ok, path: test_path, invalid_path: invalid_path, test_data: test_data}
   end
 
-  test "ClockBound.Client.now/1 with test file", %{path: path, test_data: test_data} do
-    assert {:ok, data} = ClockBound.Client.now(path)
+  test "Craft.ClockBound.Client.now/1 with test file", %{path: path, test_data: test_data} do
+    assert {:ok, data} = Client.now(path)
     assert data.clock_status == test_data.clock_status
   end
 
-  test "ClockBound.Client.now/1 with invalid data", %{invalid_path: invalid_path} do
-    assert {:error, :invalid_clockbound_data} = ClockBound.Client.now(invalid_path)
+  test "Craft.ClockBound.Client.now/1 with invalid data", %{invalid_path: invalid_path} do
+    assert {:error, :invalid_clockbound_data} = Client.now(invalid_path)
   end
 
-  test "ClockBound.Client.read/1 with test file", %{path: path, test_data: test_data} do
-    assert {:ok, data} = ClockBound.Client.read(path)
+  test "Craft.ClockBound.Client.read/1 with test file", %{path: path, test_data: test_data} do
+    assert {:ok, data} = Client.read(path)
     assert data.segment_size == test_data[:segment_size]
     assert data.version == test_data[:version]
     assert data.generation == test_data[:generation]
     {as_of_sec, as_of_ns} = test_data[:as_of]
     {void_after_sec, void_after_ns} = test_data[:void_after]
-    assert data.as_of == {as_of_sec, as_of_ns}
-    assert data.void_after == {void_after_sec, void_after_ns}
+    assert data.as_of == Client.timespec_to_nanosecond({as_of_sec, as_of_ns})
+    assert data.void_after == Client.timespec_to_nanosecond({void_after_sec, void_after_ns})
     assert data.bound == test_data[:bound]
     assert data.max_drift == test_data[:max_drift]
     assert data.clock_status == test_data[:clock_status]
   end
 
-  test "ClockBound.Client.read/1 with non-existent file" do
+  test "Craft.ClockBound.Client.read/1 with non-existent file" do
     non_existent_path = Path.join(System.tmp_dir!(), "non_existent.shm")
-    assert {:error, :enoent} = ClockBound.Client.read(non_existent_path)
+    assert {:error, :enoent} = Client.read(non_existent_path)
   end
 
-  test "ClockBound.Client.compare/2" do
+  test "Craft.ClockBound.Client.compare/2" do
     now = DateTime.utc_now()
     five_seconds_ago = DateTime.add(now, -5, :second)
 
@@ -113,9 +115,9 @@ defmodule ClockBoundClientTest do
       clock_status: :synchronized
     }
 
-    assert :gt = ClockBound.Client.compare(cb1, cb2)
-    assert :lt = ClockBound.Client.compare(cb2, cb1)
-    assert :ov = ClockBound.Client.compare(cb1, cb1)
-    assert :ov = ClockBound.Client.compare(cb1, cb3)
+    assert :gt = Client.compare(cb1, cb2)
+    assert :lt = Client.compare(cb2, cb1)
+    assert :ov = Client.compare(cb1, cb1)
+    assert :ov = Client.compare(cb1, cb3)
   end
 end

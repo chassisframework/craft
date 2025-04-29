@@ -1,4 +1,4 @@
-defmodule ClockBound.Native do
+defmodule Craft.ClockBound.Native do
   @moduledoc false
   @on_load :load_nif
 
