@@ -17,4 +17,4 @@ static ErlNifFunc nif_funcs[] = {
     {"get_monotonic_time", 0, get_monotonic_time}
 };
 
-ERL_NIF_INIT(Elixir.ClockBound.Native, nif_funcs, NULL, NULL, NULL, NULL)
+ERL_NIF_INIT(Elixir.Craft.ClockBound.Native, nif_funcs, NULL, NULL, NULL, NULL)
