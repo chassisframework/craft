@@ -124,11 +124,9 @@ defmodule Craft.ClockBound.Client do
     # Validate whether the clockbound data read from shared memory is still valid at the time of the request by
     # checking if the current monotonic time is lesser than the void_after time.
     clock_status =
-      if status in [:synchronized, :free_running] and monotonic < void_after do
-        status
-      else
-        :unknown
-      end
+      if status in [:synchronized, :free_running] and monotonic < void_after,
+        do: status,
+        else: :unknown
 
     # Calculate the duration that has elapsed between the instant when the clockbound data were
     # written to the shared memory segment (approximated by `as_of`), and the instant when the
