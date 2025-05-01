@@ -31,7 +31,7 @@ defmodule Craft.ClockBound.Client do
 
   ## Notes
 
-  - The default shared memory path is `/var/run/clockbound/shm`. You can override this by passing a custom path to the functions.
+  - The default shared memory path is `/var/run/clockbound/shm`. You can override this by updating the config value for `[:craft, :clockbound, :shm_path].
   - The module adheres to the ClockBound protocol specification, which can be found [here](https://github.com/aws/clock-bound/blob/main/docs/PROTOCOL.md).
   """
 
