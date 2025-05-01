@@ -27,7 +27,7 @@ defmodule Craft.Consensus.State do
     :voted_for, # lonely and follower
     :election, # lonely and candidate
     :leadership_transfer_request_id, # candidate only
-    :incoming_snapshot_transfer # receiving_snapshot only
+    :snapshot_transfer # receiving_snapshot only
   ]
 
   def new(name, nodes, persistence, machine) do

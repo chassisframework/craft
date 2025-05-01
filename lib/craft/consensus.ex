@@ -330,11 +330,6 @@ defmodule Craft.Consensus do
 
   def follower(:state_timeout, :become_lonely, data), do: {:next_state, :lonely, data}
 
-  # we just installed this snapshot, the leader hasn't heard yet, ignore it.
-  def follower(:cast, %InstallSnapshot{snapshot_transfer: s}, %State{incoming_snapshot_transfer: {_pid, s}}) do
-    :keep_state_and_data
-  end
-
   def follower(:cast, %RequestVote{leadership_transfer: true, term: term} = request_vote, %State{current_term: current_term} = data) when term > current_term do
     {vote_granted, data} =
       if State.vote_for?(data, request_vote) do
@@ -377,7 +372,7 @@ defmodule Craft.Consensus do
         {true, data}
       else
         case Persistence.fetch(data.persistence, append_entries.prev_log_index) do
-          {:ok, %{term: ^prev_log_term} = e} ->
+          {:ok, %{term: ^prev_log_term}} ->
             rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
 
             persistence =
