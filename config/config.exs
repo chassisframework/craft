@@ -22,5 +22,3 @@ if config_env() == :test do
 end
 
 config :craft, :clock_bound, shm_path: "/var/run/clockbound/shm"
-
-# import_config "#{config_env()}.exs"
