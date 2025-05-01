@@ -21,7 +21,6 @@ if config_env() == :test do
   config :craft, :consensus_module, Craft.TracedConsensus
 end
 
-config :clock_bound,
-  shm_path: "/var/run/clockbound/shm"
+config :craft, :clock_bound, shm_path: "/var/run/clockbound/shm"
 
 # import_config "#{config_env()}.exs"

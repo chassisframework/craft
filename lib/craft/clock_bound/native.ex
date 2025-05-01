@@ -4,15 +4,7 @@ defmodule Craft.ClockBound.Native do
 
   def load_nif do
     path = Application.app_dir(:craft, "priv/clock_wrapper")
-
-    case :os.type() do
-      # if mac os, load the NIF
-      {:unix, :darwin} ->
-        :erlang.load_nif(path, 0)
-
-      _ ->
-        :ok
-    end
+    :erlang.load_nif(path, 0)
   end
 
   # When NIF is loaded, it will override this function.

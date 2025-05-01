@@ -38,8 +38,11 @@ defmodule Craft.ClockBound.Client do
   alias Craft.ClockBound.Client
   alias Craft.ClockBound.Native
 
-  @default_shm_path Application.compile_env(:clock_bound, :shm_path)
-  @clockbound_restart_grace_period 5 * 1_000_000_000
+  @default_shm_path Application.compile_env(
+                      :craft,
+                      [:clock_bound, :shm_path],
+                      "/var/run/clockbound/shm"
+                    )
 
   defstruct [
     :earliest,
@@ -70,8 +73,6 @@ defmodule Craft.ClockBound.Client do
          latest: latest,
          clock_status: clock_status
        }}
-    else
-      {:error, reason} -> {:error, reason}
     end
   end
 
@@ -105,6 +106,10 @@ defmodule Craft.ClockBound.Client do
     end
   end
 
+  # If max_drift is too large, it indicates that some issue in the clockbound data
+  defp compute_bound_at(_real, _monotonic, %{max_drift: max_drift}) when max_drift > 1_000_000_000, do:
+    {:error, :max_drift_too_large}
+
   defp compute_bound_at(real, monotonic, clockbound_data) do
     %{
       as_of: as_of,
@@ -114,23 +119,15 @@ defmodule Craft.ClockBound.Client do
       bound: bound
     } = clockbound_data
 
-    # If max_drift is too large, it indicates that some issue in the clockbound data
-    if max_drift > 1_000_000_000 do
-      {:error, :max_drift_too_large}
-    else
-      # Validate whether the clockbound data read from shared memory is still valid at the time of the request by
-      # checking if the current monotonic time is lesser than the void_after time.
-      clock_status =
-        if status in [:synchronized, :free_running] do
-          cond do
-            # If the clockbound data has not been updated in a while, consider it trusted only up to a grace period of 5 sec.
-            as_of - monotonic < @clockbound_restart_grace_period -> status
-            monotonic < void_after -> :free_running
-            true -> :unknown
-          end
-        else
-          :unknown
-        end
+    # Validate whether the clockbound data read from shared memory is still valid at the time of the request by
+    # checking if the current monotonic time is lesser than the void_after time.
+    clock_status =
+      if status in [:synchronized, :free_running] and monotonic < void_after do
+        status
+      else
+        :unknown
+      end
+
 
       # Calculate the duration that has elapsed between the instant when the clockbound data were
       # written to the shared memory segment (approximated by `as_of`), and the instant when the
@@ -155,20 +152,18 @@ defmodule Craft.ClockBound.Client do
           true -> :causality_breach
         end
 
-      case duration do
-        :causality_breach ->
-          {:error, :causality_breach}
+      if duration == :causality_breach do
+        {:error, :causality_breach}
+      else
+        # Increase the bound on clock error with the maximum drift the clock may be experiencing
+        # between the time the clockbound data was written and ~now.
+        duration_sec = div(duration, 1_000_000_000)
+        updated_bound = bound + duration_sec * max_drift
+        # Build the (earliest, latest) interval within which true time exists.
+        earliest = real - updated_bound
+        latest = real + updated_bound
 
-        _ ->
-          # Increase the bound on clock error with the maximum drift the clock may be experiencing
-          # between the time the clockbound data was written and ~now.
-          duration_sec = div(duration, 1_000_000_000)
-          updated_bound = bound + duration_sec * max_drift
-          # Build the (earliest, latest) interval within which true time exists.
-          earliest = real - updated_bound
-          latest = real + updated_bound
-
-          {:ok, {earliest, latest, clock_status}}
+        {:ok, {earliest, latest, clock_status}}
       end
     end
   end
