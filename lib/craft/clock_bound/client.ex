@@ -62,8 +62,8 @@ defmodule Craft.ClockBound.Client do
   """
   def now(shm_path \\ @default_shm_path) do
     with {:ok, data} <- read(shm_path),
-         real = :os.system_time(:nanosecond),
          monotonic = monotonic_time(),
+         real = :os.system_time(:nanosecond),
          {:ok, {earliest, latest, clock_status}} <- compute_bound_at(real, monotonic, data),
          {:ok, earliest} <- DateTime.from_unix(earliest, :nanosecond),
          {:ok, latest} <- DateTime.from_unix(latest, :nanosecond) do
