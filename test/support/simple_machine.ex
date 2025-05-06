@@ -31,6 +31,12 @@ defmodule Craft.SimpleMachine do
     {:ok, Map.get(state, k)}
   end
 
+  @impl TestModel
+  def query({:notify, pid}, _state) do
+    send(pid, {:query_from, self()})
+    :ok
+  end
+
   @impl true
   def receive_snapshot(snapshot, _state) do
     snapshot

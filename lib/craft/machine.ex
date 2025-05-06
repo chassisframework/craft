@@ -146,7 +146,10 @@ defmodule Craft.Machine do
   end
 
   def query(name, node, query, consistency, opts \\ []) do
-    request(name, node, {:query, consistency}, query, opts)
+    case Keyword.get(opts, :strategy, :inline) do
+      :inline -> request(name, node, {:query, consistency}, query, opts)
+      :copy -> request(name, node, {:background_query, consistency}, query, opts)
+    end
   end
 
   defp request(name, node, type, request, opts) do
@@ -374,6 +377,14 @@ defmodule Craft.Machine do
     result = state.module.query(query, state.private)
 
     send(from, {id, result})
+
+    {:noreply, state}
+  end
+
+  def handle_cast({{:background_query, consistency}, id, query}, state) do
+    spawn_link(fn -> 
+      handle_cast({{:query, consistency}, id, query}, state)
+    end)
 
     {:noreply, state}
   end

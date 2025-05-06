@@ -154,11 +154,6 @@ defmodule Craft do
   # if `consistency` is `{:eventual, node}`, will address given node
   #
   # Craft.command(command, name) # always goes to leader, since it can modify state
-  #
-  # TODO: timeout in opts
-  #       let user choose if query handler in Machine.handle_cast(:query) spawns off a new process, to unblock the machine
-  #         - it'll copy the machine's state to a new process, which could be worth it in some scenarios
-  #
 
   @doc """
   Runs a read-only query against the machine state without committing a log message.
@@ -169,6 +164,8 @@ defmodule Craft do
   ### Opts
   - `:consistency` - Configures the type of consistency guarentees for the query
   - `timeout` - (default: 5_000) the time before we return a timeout error
+  - `strategy` - (:inline | :copy, default: :inline) allows query lookup to run in separate processes, to prevent bottlenecking, but potentially slower and using more memory as state is copied.
+
 
   ### Consistency values
   - `:linearizable` - query is run on the leader
