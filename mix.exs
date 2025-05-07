@@ -8,7 +8,6 @@ defmodule Craft.MixProject do
       elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
-      compilers: Mix.compilers() ++ [:nif],
       deps: deps()
     ]
   end

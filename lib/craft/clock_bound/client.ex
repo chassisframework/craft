@@ -124,47 +124,25 @@ defmodule Craft.ClockBound.Client do
     } = clockbound_data
 
     # Validate whether the clockbound data read from shared memory is still valid at the time of the request by
-    # checking if the current monotonic time is lesser than the void_after time.
-    clock_status =
-      if status in [:synchronized, :free_running] and monotonic_after < void_after,
-        do: status,
-        else: :unknown
-
-    # Calculate the duration that has elapsed between the instant when the clockbound data were
-    # written to the shared memory segment (approximated by `as_of`), and the instant when the
-    # request to calculate the ClockErrorBound was actually requested (approximated by `monotonic`). This
-    # duration is used to compute the growth of the error bound due to local dispersion
-    # between polling chrony and now.
-    #
-    # Ideally, the current monotonic time should be greater than the time the clockbound data was written(as_of),
-    # but sometimes monotonic time is observed to be older by a handful of nanoseconds. To avoid this
-    # issue, we will introduce a small epsilon value (1ms) to account for clock precision.
-    # The cause of this behavior is not clear
-    causality_blur = as_of - 1000
-
-    duration =
-      cond do
-        # Happy path, clockbound data is older than the current monotonic time.
-        monotonic_before >= as_of -> monotonic_before - as_of
-        # Causality is "almost" broken but still within the epsilon range of clock precision as mentioned above.
-        # assume the monotonic time and the clockbound data updated time to be the same for this case (elapsed time = 0)
-        monotonic_before > causality_blur -> 0
-        # Causality is breached.
-        true -> :causality_breach
-      end
-
-    if duration == :causality_breach do
+    # checking if the monotonic time at the request is within the bound of clockbound (as_if, void_after time)
+    if status != :synchronized or monotonic_after > void_after or monotonic_before < as_of do
       {:error, :causality_breach}
     else
+      # Calculate the duration that has elapsed between the instant when the clockbound data were
+      # written to the shared memory segment (approximated by `as_of`), and the instant when the
+      # request to calculate the ClockErrorBound was actually requested (approximated by `monotonic`). This
+      # duration is used to compute the growth of the error bound due to local dispersion
+      # between polling chrony and now.
+      duration_sec = monotonic_before |> Kernel.-(as_of) |> div(1_000_000_000)
+
       # Increase the bound on clock error with the maximum drift the clock may be experiencing
       # between the time the clockbound data was written and ~now.
-      duration_sec = div(duration, 1_000_000_000)
       updated_bound = bound + duration_sec * max_drift
       # Build the (earliest, latest) interval within which true time exists.
       earliest = real - updated_bound
       latest = real + updated_bound
 
-      {:ok, {earliest, latest, clock_status}}
+      {:ok, {earliest, latest, :synchronized}}
     end
   end
 
