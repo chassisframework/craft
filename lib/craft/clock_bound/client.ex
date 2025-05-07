@@ -62,9 +62,11 @@ defmodule Craft.ClockBound.Client do
   """
   def now(shm_path \\ @default_shm_path) do
     with {:ok, data} <- read(shm_path),
-         monotonic = monotonic_time(),
+         monotonic_before = monotonic_time(),
          real = :os.system_time(:nanosecond),
-         {:ok, {earliest, latest, clock_status}} <- compute_bound_at(real, monotonic, data),
+         monotonic_after = monotonic_time(),
+         {:ok, {earliest, latest, clock_status}} <-
+           compute_bound_at(real, monotonic_before, monotonic_after, data),
          {:ok, earliest} <- DateTime.from_unix(earliest, :nanosecond),
          {:ok, latest} <- DateTime.from_unix(latest, :nanosecond) do
       {:ok,
@@ -107,12 +109,12 @@ defmodule Craft.ClockBound.Client do
   end
 
   # If max_drift is too large, it indicates that some issue in the clockbound data
-  defp compute_bound_at(_real, _monotonic, %{max_drift: max_drift})
+  defp compute_bound_at(_real, _monotonic_before, _monotonic_after, %{max_drift: max_drift})
        when max_drift > 1_000_000_000 do
     {:error, :max_drift_too_large}
   end
 
-  defp compute_bound_at(real, monotonic, clockbound_data) do
+  defp compute_bound_at(real, monotonic_before, monotonic_after, clockbound_data) do
     %{
       as_of: as_of,
       void_after: void_after,
@@ -124,7 +126,7 @@ defmodule Craft.ClockBound.Client do
     # Validate whether the clockbound data read from shared memory is still valid at the time of the request by
     # checking if the current monotonic time is lesser than the void_after time.
     clock_status =
-      if status in [:synchronized, :free_running] and monotonic < void_after,
+      if status in [:synchronized, :free_running] and monotonic_after < void_after,
         do: status,
         else: :unknown
 
@@ -143,10 +145,10 @@ defmodule Craft.ClockBound.Client do
     duration =
       cond do
         # Happy path, clockbound data is older than the current monotonic time.
-        monotonic >= as_of -> monotonic - as_of
+        monotonic_before >= as_of -> monotonic_before - as_of
         # Causality is "almost" broken but still within the epsilon range of clock precision as mentioned above.
         # assume the monotonic time and the clockbound data updated time to be the same for this case (elapsed time = 0)
-        monotonic > causality_blur -> 0
+        monotonic_before > causality_blur -> 0
         # Causality is breached.
         true -> :causality_breach
       end
