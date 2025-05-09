@@ -7,13 +7,21 @@ defmodule Craft.RPC.InstallSnapshot do
     :leader_id,
     :log_index,
     :log_entry,
-    :snapshot_transfer,
+    :snapshot_transfer
   ]
 
-  def new(state, to_node) do
-    log_index = State.latest_snapshot_index(state)
+  def new(state, for_node) do
+    {log_index, snapshot_transfer} =
+      case Map.fetch(state.leader_state.snapshot_transfers, for_node) do
+        {:ok, {index, snapshot_transfer}} ->
+          {index, snapshot_transfer}
+
+        # log-stored snapshot
+        :error ->
+          {State.latest_snapshot_index(state), nil}
+      end
+
     {:ok, log_entry} = Persistence.fetch(state.persistence, log_index)
-    snapshot_transfer = state.leader_state.snapshot_transfers[to_node]
 
     %__MODULE__{
       term: state.current_term,

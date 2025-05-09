@@ -50,101 +50,6 @@ defmodule Craft.Consensus.State.LeaderState do
     end
   end
 
-  defmodule SnapshotTransfer do
-    # send entire snapshot as a single message to start, later we'll use :file.sendfile
-    defstruct [:files]
-
-    def new(state) do
-      :FIXME
-      # log_index = State.latest_snapshot_index(state)
-      # {:ok, log_entry} = Persistence.fetch(state.persistence, log_index)
-
-      # dir = Map.fetch!(state.snapshots, log_index)
-      # files =
-      #   dir
-      #   |> File.ls!()
-      #   |> Map.new(fn name ->
-      #     file = dir |> Path.join(name) |> File.read!()
-      #     {name, file}
-      #   end)
-
-      # %__MODULE__{
-      #   log_index: log_index,
-      #   log_entry: log_entry,
-      #   files: files
-      # }
-    end
-
-    #TODO: handle directories
-    def receive(%__MODULE__{} = snapshot_transfer, data_dir) do
-      File.mkdir_p!(data_dir)
-
-      for {name, content} <- snapshot_transfer.files do
-        data_dir
-        |> Path.join(name)
-        |> IO.inspect(label: "WRITING")
-        |> File.write!(content)
-      end
-    end
-  end
-  # defmodule SnapshotTransfer do
-  #   defstruct [
-  #     :log_index,
-  #     :dir,
-  #     :streams
-  #     :current_transfer # {file, handle, offset, chunk}
-  #   ]
-
-  #   defmodule FileTransfer do
-  #     # TODO: make configurable (or adaptive based on network congestion)
-  #     @snapshot_chunk_size 5 # bytes
-
-  #     defstruct [:path, :handle, :chunk, offset: 0]
-
-  #     def new(path) do
-  #       {:ok, handle} = File.open(path, [:read, read_ahead: @snapshot_chunk_size])
-
-  #       %__MODULE__{
-  #         path: path,
-  #         handle: handle,
-  #         chunk: read(handle)
-  #       }
-  #     end
-
-  #     def advance(%__MODULE__{} = file_transfer) do
-  #       chunk = read(file_transfer.handle)
-
-  #       %__MODULE__{
-  #         file_transfer |
-  #         chunk: chunk,
-  #         offset: file_transfer.offset + byte_size(chunk)
-  #       }
-  #     end
-
-  #     defp read(handle) do
-  #       IO.read(handle, @snapshot_chunk_size)
-  #     end
-  #   end
-
-  #   def new(state) do
-  #     log_index = State.latest_snapshot_index(state)
-  #     dir = Map.fetch!(state.snapshots, log_index)
-  #     files = File.ls!(dir)
-  #     next_file = List.first(files)
-  #     file_transfer =
-  #       dir
-  #       |> Path.join(next_file)
-  #       |> FileTransfer.new()
-
-  #     %__MODULE__{
-  #       log_index: log_index,
-  #       dir: dir,
-  #       files: {[], files},
-  #       current_transfer: file_transfer
-  #     }
-  #   end
-  # end
-
   # FIXME: if config_change_in_progress, reconstruct :membership_change?
   # this may need to happen after new leader figures out the commit index
   # may need to have stored the :membership_change in the MembershipEntry
@@ -277,8 +182,14 @@ defmodule Craft.Consensus.State.LeaderState do
     end
   end
 
-  def create_snapshot_transfer(%State{} = state, node) do
-    snapshot_transfers = Map.put(state.leader_state.snapshot_transfers, node, SnapshotTransfer.new(state))
+  def create_snapshot_transfer(%State{leader_state: %__MODULE__{snapshot_transfers: snapshot_transfers}} = state, for_node) when is_map_key(snapshot_transfers, for_node), do: state
+
+  def create_snapshot_transfer(%State{} = state, for_node) do
+    index = State.latest_snapshot_index(state)
+    {remote_path, files} = Map.fetch!(state.snapshots, index)
+    snapshot_transfer = SnapshotTransfer.new(remote_path, files)
+
+    snapshot_transfers = Map.put(state.leader_state.snapshot_transfers, for_node, {index, snapshot_transfer})
 
     %State{state | leader_state: %__MODULE__{state.leader_state | snapshot_transfers: snapshot_transfers}}
   end
