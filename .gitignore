@@ -14,3 +14,4 @@ tmp
 test_logs
 history
 index.html
+/priv/*.so
