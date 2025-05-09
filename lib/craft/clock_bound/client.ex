@@ -35,7 +35,6 @@ defmodule Craft.ClockBound.Client do
   - The module adheres to the ClockBound protocol specification, which can be found [here](https://github.com/aws/clock-bound/blob/main/docs/PROTOCOL.md).
   """
 
-  alias Craft.ClockBound.Client
   alias Craft.ClockBound.Native
 
   @default_shm_path Application.compile_env(
@@ -62,9 +61,9 @@ defmodule Craft.ClockBound.Client do
   """
   def now(shm_path \\ @default_shm_path) do
     with {:ok, data} <- read(shm_path),
-         monotonic_before = monotonic_time(),
+         monotonic_before = clock_module().monotonic_time(),
          real = :os.system_time(:nanosecond),
-         monotonic_after = monotonic_time(),
+         monotonic_after = clock_module().monotonic_time(),
          {:ok, {earliest, latest, clock_status}} <-
            compute_bound_at(real, monotonic_before, monotonic_after, data),
          {:ok, earliest} <- DateTime.from_unix(earliest, :nanosecond),
@@ -85,7 +84,7 @@ defmodule Craft.ClockBound.Client do
     * `:gt` if a is strictly older than b
     * `:ov` if the ranges overlap and no strict ordering can be determined
   """
-  def compare(%Client{} = cbe_1, %Client{} = cbe_2) do
+  def compare(%__MODULE__{} = cbe_1, %__MODULE__{} = cbe_2) do
     cond do
       DateTime.after?(cbe_1.earliest, cbe_2.latest) -> :gt
       DateTime.before?(cbe_1.latest, cbe_2.earliest) -> :lt
@@ -177,6 +176,10 @@ defmodule Craft.ClockBound.Client do
       _ ->
         {:error, :invalid_clockbound_data}
     end
+  end
+
+  defp clock_module do
+    Application.fetch_env!(:craft, Craft.ClockBound.Adapter)[:impl]
   end
 
   def timespec_to_nanosecond({sec, nsec}) when is_integer(sec) and is_integer(nsec) do

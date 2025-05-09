@@ -21,7 +21,8 @@ defmodule Craft.MixProject do
 
   defp deps do
     [
-      {:rocksdb, git: "git@github.com:emqx/erlang-rocksdb.git"}
+      {:rocksdb, git: "git@github.com:emqx/erlang-rocksdb.git"},
+      {:hammox, "~> 0.2", only: :test}
     ]
   end
 
