@@ -4,38 +4,64 @@ defmodule CraftTest do
   alias Craft.Nexus.Stability
   alias Craft.SimpleMachine
 
-  nexus_test "starts a group, elects a leader, replicates logs, processes commands", %{name: name, nexus: nexus} do
+  nexus_test "starts a group, elects a leader, replicates logs, processes commands", %{
+    name: name,
+    nexus: nexus
+  } do
     wait_until(nexus, {Stability, :all})
 
     assert :ok = SimpleMachine.put(name, :a, 123)
     assert {:ok, 123} = SimpleMachine.get(name, :a)
   end
 
-  nexus_test "query/3", %{name: name, nodes: nodes, nexus: nexus} do
-    %{leader: leader} = wait_until(nexus, {Stability, :all})
+  describe "query/3" do
+    nexus_test "exits early when timeout is hit", %{name: name, nexus: nexus} do
+      wait_until(nexus, {Stability, :all})
 
-    # assert timeout on when no network
-    nemesis(nexus, fn _ -> :drop end)
-    assert {:error, :timeout} = Craft.query({:get, :a}, name, timeout: 1)
+      # assert timeout on when no network
+      nemesis(nexus, fn _ -> :drop end)
+      assert {:error, :timeout} = Craft.query({:get, :a}, name, timeout: 1)
+    end
 
-    # assert leader doesn't need to contact other nodes in eventual mode
-    assert {:ok, nil} = Craft.query({:get, :a}, name, consistency: {:eventual, :leader})
+    nexus_test "consistency setting affects availability", %{name: name, nodes: nodes, nexus: nexus} do
+      %{leader: leader} = wait_until(nexus, {Stability, :all})
+      # assert leader doesn't need to contact other nodes in eventual mode
+      assert {:ok, nil} = Craft.query({:get, :a}, name, consistency: {:eventual, :leader})
 
-    # assert returns out of date value on isolated node in :eventual mode
-    isolated_node = Enum.random(nodes --  [leader])
-    nemesis(nexus, fn 
-      {_, from, to, _} when isolated_node in [to, from] -> :drop 
-      _event -> :forward 
-    end)
-    assert :ok = SimpleMachine.put(name, :a, 123)
-    assert {:ok, 123} = Craft.query({:get, :a}, name)
-    assert {:ok, nil} = Craft.query({:get, :a}, name, consistency: {:eventual, {:node, isolated_node}})
+      # assert returns out of date value on isolated node in :eventual mode
+      isolated_node = Enum.random(nodes -- [leader])
 
-    # assert successful linearizable query when network returns
-    nemesis(nexus, fn _ -> :forward end)
-    assert {:ok, 123} = Craft.query({:get, :a}, name, consistency: :linearizable)
+      nemesis(nexus, fn
+        {_, from, to, _} when isolated_node in [to, from] -> :drop
+        _event -> :forward
+      end)
+
+      assert :ok = SimpleMachine.put(name, :a, 123)
+      assert {:ok, 123} = Craft.query({:get, :a}, name)
+
+      assert {:ok, nil} =
+               Craft.query({:get, :a}, name, consistency: {:eventual, {:node, isolated_node}})
+
+      # assert successful linearizable query when network returns
+      nemesis(nexus, fn _ -> :forward end)
+      assert {:ok, 123} = Craft.query({:get, :a}, name, consistency: :linearizable)
+    end
+
+    nexus_test "concurrency setting affects blocking", %{name: name, nexus: nexus} do
+      wait_until(nexus, {Stability, :all})
+
+      Craft.query({:notify, self()}, name)
+      assert_receive {:query_from, foreground_pid}
+
+      Craft.query({:notify, self()}, name, concurrency: :non_blocking)
+      assert_receive {:query_from, background_pid}
+
+      assert foreground_pid != background_pid
+
+      Craft.query({:notify, self()}, name)
+      assert_receive {:query_from, ^foreground_pid}
+    end
   end
-
 
   nexus_test "leadership transfer", %{nodes: nodes, name: name, nexus: nexus} do
     %{leader: leader} = wait_until(nexus, {Stability, :all})
