@@ -21,6 +21,7 @@ defmodule Craft.MixProject do
 
   defp deps do
     [
+      {:propcheck, "~> 1.4", only: [:test, :dev]},
       {:rocksdb, git: "git@github.com:emqx/erlang-rocksdb.git"},
       {:hammox, "~> 0.2", only: :test}
     ]

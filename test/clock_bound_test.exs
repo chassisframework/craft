@@ -1,5 +1,6 @@
 defmodule ClockBoundClientTest do
   use ExUnit.Case
+  use PropCheck
 
   import Mox
 
@@ -33,13 +34,19 @@ defmodule ClockBoundClientTest do
   end
 
   test "Craft.ClockBound.Client.now/1 with test file", %{test_shm_path: test_shm_path, expected_data: expected_data} do
+    property = forall monotonic_time <- integer() do
+      ClockMock
+      |> stub(:monotonic_time, fn -> monotonic_time end)
 
-    stub(ClockMock, :monotonic_time, fn ->
-      expected_data[:as_of] + 10
-    end)
+      if monotonic_time < expected_data[:as_of] or monotonic_time > expected_data[:void_after] do
+        {:error, :causality_breach} == Client.now(test_shm_path)
+      else
+        assert {:ok, %Client{} = data} = Client.now(test_shm_path)
+        data.clock_status == :synchronized
+      end
+    end
 
-    assert {:ok, %Client{} = data} = Client.now(test_shm_path)
-    assert data.clock_status == expected_data[:clock_status]
+    PropCheck.quickcheck(property)
   end
 
   test "Craft.ClockBound.Client.now/1 with invalid data", %{invalid_file: invalid_file} do
