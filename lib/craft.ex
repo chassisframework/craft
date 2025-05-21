@@ -158,11 +158,6 @@ defmodule Craft do
   # if `consistency` is `{:eventual, node}`, will address given node
   #
   # Craft.command(command, name) # always goes to leader, since it can modify state
-  #
-  # TODO: timeout in opts
-  #       let user choose if query handler in Machine.handle_cast(:query) spawns off a new process, to unblock the machine
-  #         - it'll copy the machine's state to a new process, which could be worth it in some scenarios
-  #
 
   @doc """
   Runs a read-only query against the machine state without committing a log message.

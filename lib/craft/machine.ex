@@ -19,9 +19,8 @@ defmodule Craft.Machine do
   @type snapshot :: any()
 
   @callback init(Craft.group_name()) :: {:ok, private()}
-  @callback command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
-  @callback query(Craft.query(), private()) :: Craft.reply()
-  # TODO: document that we want an int or nil if no entries have been applied
+  @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
+  @callback handle_query(Craft.query(), private()) :: Craft.reply()
 
   defmodule MutableMachine do
     @type private() :: Craft.Machine.private()
@@ -31,7 +30,7 @@ defmodule Craft.Machine do
     @callback last_applied_log_index(private()) :: Craft.log_index() | nil
     @callback snapshot(private()) :: {index :: pos_integer(), snapshot(), private()} | nil
     @callback prepare_to_receive_snapshot(private()) :: {:ok, data_dir, private()}
-    @callback receive_snapshot(private()) :: {:ok, private()}
+    @callback receive_snapshot(private()) :: private()
   end
 
   defmodule LogStoredMachine do
@@ -215,7 +214,7 @@ defmodule Craft.Machine do
 
           {:ok, %CommandEntry{command: command}} ->
             {reply, side_effects, private} =
-              case state.module.command(command, index, state.private) do
+              case state.module.handle_command(command, index, state.private) do
                 {reply, private} ->
                   {reply, [], private}
 
@@ -298,7 +297,7 @@ defmodule Craft.Machine do
   @impl true
   def handle_cast({{:query, :linearizable}, {from, _ref} = id, query}, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
     if state.lease_expires_at && time_until_lease_expires(state) > 0 do
-      send(from, {id, state.module.query(query, state.private)})
+      send(from, {id, state.module.handle_query(query, state.private)})
     else
       send(from, {id, {:error, :not_leaseholder}})
     end
@@ -307,7 +306,7 @@ defmodule Craft.Machine do
   end
 
   def handle_cast({{:query, :linearizable}, id, query}, %State{role: :leader} = state) do
-    result = state.module.query(query, state.private)
+    result = state.module.handle_query(query, state.private)
 
     {:noreply, %State{state | client_query_results: [{id, result} | state.client_query_results]}}
   end
@@ -323,7 +322,7 @@ defmodule Craft.Machine do
 
   def handle_cast({{:query, {:eventual, :leader}}, {from, _ref} = id, query}, state) do
     if state.role == :leader do
-      send(from, {id, state.module.query(query, state.private)})
+      send(from, {id, state.module.handle_query(query, state.private)})
     else
       case Craft.MemberCache.get(state.name) do
         {:ok, leader, _members} -> send(from, {id, {:error, {:not_leader, leader}}})
@@ -335,7 +334,7 @@ defmodule Craft.Machine do
   end
 
   def handle_cast({{:query, :eventual}, {from, _ref} = id, query}, state) do
-    result = state.module.query(query, state.private)
+    result = state.module.handle_query(query, state.private)
 
     send(from, {id, result})
 
@@ -443,6 +442,7 @@ defmodule Craft.Machine do
     mutable = !!Keyword.fetch!(opts, :mutable)
 
     quote do
+      @behaviour Craft.Machine
       if unquote(mutable) do
         @behaviour MutableMachine
       else

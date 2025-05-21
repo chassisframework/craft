@@ -181,7 +181,6 @@ defmodule Craft.Consensus.State do
     Election.election_result(state.election, quorum_needed(state))
   end
 
-  # TODO: pre-compute quorum and cache
   def quorum_needed(%__MODULE__{} = state) do
     num_members = MapSet.size(state.members.voting_nodes)
 
@@ -202,11 +201,6 @@ defmodule Craft.Consensus.State do
   end
 
   def logger_metadata(%__MODULE__{} = state, extras \\ []) do
-    # color =
-    #   node()
-    #   |> :erlang.phash2(255)
-    #   |> IO.ANSI.color()
-
     color =
       case state.state do
         :lonely ->

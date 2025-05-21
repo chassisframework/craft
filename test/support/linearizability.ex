@@ -28,12 +28,6 @@ defmodule Craft.Linearizability do
     ]
   end
 
-  defmodule TestModel do
-    @callback init() :: {:ok, state :: any()}
-    @callback command(command :: any(), state :: any()) :: state :: any()
-    @callback query(query :: any(), state :: any()) :: result :: any()
-  end
-
   def run do
     File.read!("history")
     |> :erlang.binary_to_term()
@@ -41,17 +35,17 @@ defmodule Craft.Linearizability do
   end
 
   def cross_check(linearized_operations, model) do
-    {:ok, model_state} = model.init()
+    {:ok, model_state} = model.init(nil)
 
     result =
       Enum.reduce_while(linearized_operations, model_state, fn op, model_state ->
         {model_response, new_model_state} =
           case op.request do
             {:command, command} ->
-              model.command(command, model_state)
+              model.handle_command(command, nil, model_state)
 
             {:query, query} ->
-              {model.query(query, model_state), model_state}
+              {model.handle_query(query, model_state), model_state}
           end
 
         if model_response == op.response do
@@ -66,7 +60,7 @@ defmodule Craft.Linearizability do
 
   def linearize([], _model), do: true
   def linearize(history, model) do
-    {:ok, model_state} = model.init()
+    {:ok, model_state} = model.init(nil)
 
     {history, ignored_ops} =
       history
@@ -116,10 +110,10 @@ defmodule Craft.Linearizability do
         {model_response, new_model_state} =
           case op.request do
             {:command, command} ->
-              model.command(command, model_state)
+              model.handle_command(command, nil, model_state)
 
             {:query, query} ->
-              {model.query(query, model_state), model_state}
+              {model.handle_query(query, model_state), model_state}
           end
 
         # if the operation timed out, consider the possiblity that it occurred but the client just didn't get a response

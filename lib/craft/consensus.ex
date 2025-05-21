@@ -973,7 +973,6 @@ defmodule Craft.Consensus do
   defp not_leader_response(%State{leader_id: nil}), do: {:error, :unknown_leader}
   defp not_leader_response(%State{leader_id: leader_id}), do: {:error, {:not_leader, leader_id}}
 
-  #TODO: parallelize?
   defp heartbeat(%State{} = state) do
     # the monotonic clock is not strictly increasing, so it can freeze unboundedly.
     # if that happens, we add a millisecond to the last round's value to continue generating unique consensus round ids

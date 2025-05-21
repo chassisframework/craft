@@ -18,6 +18,7 @@ defmodule Craft.RocksDBMachine do
     defstruct [:data_dir, :db, :log_index_column_family, :snapshots_dir]
   end
 
+  @impl true
   def init(group_name) do
     group_dir =
       group_name
@@ -46,12 +47,14 @@ defmodule Craft.RocksDBMachine do
     {:ok, %State{state | db: db, log_index_column_family: log_index_column_family}}
   end
 
+  @impl true
   def receive_snapshot(state) do
     {:ok, state} = do_init(state)
 
     state
   end
 
+  @impl true
   def prepare_to_receive_snapshot(state) do
     :rocksdb.close(state.db)
 
@@ -60,7 +63,8 @@ defmodule Craft.RocksDBMachine do
     {:ok, state.data_dir, state}
   end
 
-  def command({:put, k, v}, log_index, state) do
+  @impl true
+  def handle_command({:put, k, v}, log_index, state) do
     {:ok, batch} = :rocksdb.batch()
     :ok = :rocksdb.batch_put(batch, encode(k), encode(v))
     :ok = :rocksdb.batch_put(batch, state.log_index_column_family, @log_index_key, encode(log_index))
@@ -71,11 +75,12 @@ defmodule Craft.RocksDBMachine do
   end
 
   # TODO: inject this clause via `use Craft.Machine`
-  def command(_, _log_index, state) do
+  def handle_command(_, _log_index, state) do
     {{:error, :unknown_command}, state}
   end
 
-  def query({:get, k}, state) do
+  @impl true
+  def handle_query({:get, k}, state) do
     case :rocksdb.get(state.db, encode(k), []) do
       {:ok, value} ->
         {:ok, decode(value)}
@@ -88,6 +93,11 @@ defmodule Craft.RocksDBMachine do
     end
   end
 
+  def handle_query(_, state) do
+    {{:error, :unknown_query}, state}
+  end
+
+  @impl true
   def snapshot(state) do
     index =
       state
@@ -111,6 +121,7 @@ defmodule Craft.RocksDBMachine do
     File.ls!(state.snapshots_dir)
   end
 
+  @impl true
   def last_applied_log_index(state) do
     case :rocksdb.get(state.db, state.log_index_column_family, @log_index_key, []) do
       {:ok, value} ->

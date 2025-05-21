@@ -10,7 +10,6 @@ defmodule Craft.RPC do
 
   require Logger
 
-  # TODO: parallelize
   def request_vote(state, opts \\ []) do
     request_vote = RequestVote.new(state, opts)
 
