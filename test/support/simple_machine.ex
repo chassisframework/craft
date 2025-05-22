@@ -2,7 +2,7 @@ defmodule Craft.SimpleMachine do
   use Craft.Machine, mutable: false
   alias Craft.Linearizability.TestModel
 
-  @behaviour Craft.Linearizability.TestModel
+  @behaviour TestModel
 
   def put(name, k, v, opts \\ []) do
     Craft.command({:put, k, v}, name, opts)

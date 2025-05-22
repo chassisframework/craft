@@ -5,10 +5,8 @@ defmodule CraftTest do
   alias Craft.Nexus.Stability
   alias Craft.SimpleMachine
 
-  nexus_test "starts a group, elects a leader, replicates logs, processes commands", %{
-    name: name,
-    nexus: nexus
-  } do
+  nexus_test "starts a group, elects a leader, replicates logs, processes commands", ctx  do
+    %{name: name, nexus: nexus} = ctx
     wait_until(nexus, {Stability, :all})
 
     assert :ok = SimpleMachine.put(name, :a, 123)
