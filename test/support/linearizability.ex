@@ -9,7 +9,7 @@ defmodule Craft.Linearizability do
       client: term,
       called_at: number,
       received_at: number,
-      request: term
+      request: {:write, term} | {:read, term}
       response: term
     }
   ```
@@ -28,6 +28,12 @@ defmodule Craft.Linearizability do
     ]
   end
 
+  defmodule TestModel do
+    @callback init() :: {:ok, state :: any()}
+    @callback write(command :: any(), state :: any()) :: state :: any()
+    @callback read(query :: any(), state :: any()) :: result :: any()
+  end
+
   def run do
     File.read!("history")
     |> :erlang.binary_to_term()
@@ -35,17 +41,17 @@ defmodule Craft.Linearizability do
   end
 
   def cross_check(linearized_operations, model) do
-    {:ok, model_state} = model.init(nil)
+    {:ok, model_state} = model.init()
 
     result =
       Enum.reduce_while(linearized_operations, model_state, fn op, model_state ->
         {model_response, new_model_state} =
           case op.request do
-            {:command, command} ->
-              model.handle_command(command, nil, model_state)
+            {:write, command} ->
+              model.write(command, model_state)
 
-            {:query, query} ->
-              {model.handle_query(query, model_state), model_state}
+            {:read, query} ->
+              {model.read(query, model_state), model_state}
           end
 
         if model_response == op.response do
@@ -60,7 +66,7 @@ defmodule Craft.Linearizability do
 
   def linearize([], _model), do: true
   def linearize(history, model) do
-    {:ok, model_state} = model.init(nil)
+    {:ok, model_state} = model.init()
 
     {history, ignored_ops} =
       history
@@ -109,11 +115,11 @@ defmodule Craft.Linearizability do
       Enum.reduce_while(minimal_ops, cache, fn op, cache ->
         {model_response, new_model_state} =
           case op.request do
-            {:command, command} ->
-              model.handle_command(command, nil, model_state)
+            {:write, command} ->
+              model.write(command, model_state)
 
-            {:query, query} ->
-              {model.handle_query(query, model_state), model_state}
+            {:read, query} ->
+              {model.read(query, model_state), model_state}
           end
 
         # if the operation timed out, consider the possiblity that it occurred but the client just didn't get a response

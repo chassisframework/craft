@@ -1,5 +1,8 @@
 defmodule Craft.SimpleMachine do
   use Craft.Machine, mutable: false
+  alias Craft.Linearizability.TestModel
+
+  @behaviour Craft.Linearizability.TestModel
 
   def put(name, k, v, opts \\ []) do
     Craft.command({:put, k, v}, name, opts)
@@ -9,10 +12,19 @@ defmodule Craft.SimpleMachine do
     Craft.query({:get, k}, name, opts)
   end
 
+  @impl TestModel
+  def init, do: init(nil)
+
   @impl true
   def init(_group_name) do
     {:ok, %{}}
   end
+
+  @impl TestModel
+  def write(command, state), do: handle_command(command, nil, state)
+
+  @impl TestModel
+  def read(query, state), do: handle_query(query, state)
 
   @impl true
   def handle_command({:put, k, v}, _log_index, state) do

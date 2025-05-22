@@ -125,10 +125,10 @@ defmodule Craft.LinearizabilityTest do
 
       if :rand.uniform(100) > 50 do
         command = {:put, :a, "#{value}_#{i}"}
-        {{:command, command}, Craft.command(command, ctx.name)}
+        {{:write, command}, Craft.command(command, ctx.name)}
       else
         query = {:get, :a}
-        {{:query, query}, Craft.query(query, ctx.name)}
+        {{:read, query}, Craft.query(query, ctx.name)}
       end
     end
   end
