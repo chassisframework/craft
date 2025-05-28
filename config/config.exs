@@ -25,3 +25,4 @@ else
 end
 
 config :craft, :clock_bound, shm_path: "/var/run/clockbound/shm0"
+config :craft, :clock_bound, version: 2

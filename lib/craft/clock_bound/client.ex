@@ -42,7 +42,8 @@ defmodule Craft.ClockBound.Client do
                       [:clock_bound, :shm_path],
                       "/var/run/clockbound/shm"
                     )
-  @clockbound_version 2
+  @clock Application.compile_env!(:craft, Craft.ClockBound.Adapter)[:impl]
+  @clockbound_version Application.compile_env(:craft, [:clock_bound, :version], 2)
 
   defstruct [
     :earliest,
@@ -62,9 +63,9 @@ defmodule Craft.ClockBound.Client do
   """
   def now(shm_path \\ @default_shm_path) do
     with {:ok, data} <- read(shm_path),
-         monotonic_before = clock_module().monotonic_time(),
+         monotonic_before = @clock.monotonic_time(),
          real = :os.system_time(:nanosecond),
-         monotonic_after = clock_module().monotonic_time(),
+         monotonic_after = @clock.monotonic_time(),
          {:ok, {earliest, latest, clock_status}} <-
            compute_bound_at(real, monotonic_before, monotonic_after, data),
          {:ok, earliest} <- DateTime.from_unix(earliest, :nanosecond),
@@ -186,10 +187,6 @@ defmodule Craft.ClockBound.Client do
       _ ->
         {:error, :invalid_clockbound_data}
     end
-  end
-
-  defp clock_module do
-    Application.fetch_env!(:craft, Craft.ClockBound.Adapter)[:impl]
   end
 
   def timespec_to_nanosecond({sec, nsec}) when is_integer(sec) and is_integer(nsec) do
