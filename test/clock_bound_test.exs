@@ -11,16 +11,19 @@ defmodule ClockBoundClientTest do
 
   setup do
     # expected data from the test file
-    test_shm_path = "test/fixtures/clockbound_test_shm"
+    test_shm_path = "test/fixtures/clockbound_test_shm0"
+
     expected_data = %{
-      version: 1,
-      bound: 15023032,
+      version: 2,
+      bound: 50_299_637,
       clock_status: :synchronized,
-      max_drift: 50000,
-      void_after: 2391606000000000,
-      as_of: 2390606012758000,
-      generation: 18546,
-      segment_size: 72
+      max_drift: 1000,
+      void_after: 4_063_841_000_000_000,
+      as_of: 4_062_841_106_573_000,
+      generation: 1250,
+      segment_size: 80,
+      clock_disruption_support: 0,
+      disruption_marker: 0
     }
 
     invalid_file = Path.join(System.tmp_dir!(), "invalid_clockbound_shm")
@@ -33,18 +36,22 @@ defmodule ClockBoundClientTest do
     {:ok, test_shm_path: test_shm_path, invalid_file: invalid_file, expected_data: expected_data}
   end
 
-  test "Craft.ClockBound.Client.now/1 with test file", %{test_shm_path: test_shm_path, expected_data: expected_data} do
-    property = forall monotonic_time <- integer() do
-      ClockMock
-      |> stub(:monotonic_time, fn -> monotonic_time end)
+  test "Craft.ClockBound.Client.now/1 with test file", %{
+    test_shm_path: test_shm_path,
+    expected_data: expected_data
+  } do
+    property =
+      forall monotonic_time <- integer() do
+        ClockMock
+        |> stub(:monotonic_time, fn -> monotonic_time end)
 
-      if monotonic_time < expected_data[:as_of] or monotonic_time > expected_data[:void_after] do
-        {:error, :causality_breach} == Client.now(test_shm_path)
-      else
-        assert {:ok, %Client{} = data} = Client.now(test_shm_path)
-        data.clock_status == :synchronized
+        if monotonic_time < expected_data[:as_of] or monotonic_time > expected_data[:void_after] do
+          {:error, :causality_breach} == Client.now(test_shm_path)
+        else
+          assert {:ok, %Client{} = data} = Client.now(test_shm_path)
+          data.clock_status == :synchronized
+        end
       end
-    end
 
     PropCheck.quickcheck(property)
   end
@@ -53,7 +60,10 @@ defmodule ClockBoundClientTest do
     assert {:error, :invalid_clockbound_data} = Client.now(invalid_file)
   end
 
-  test "Craft.ClockBound.Client.read/1 with test file", %{test_shm_path: test_shm_path, expected_data: expected_data} do
+  test "Craft.ClockBound.Client.read/1 with test file", %{
+    test_shm_path: test_shm_path,
+    expected_data: expected_data
+  } do
     assert {:ok, data} = Client.read(test_shm_path)
     assert data.segment_size == expected_data[:segment_size]
     assert data.version == expected_data[:version]

@@ -24,4 +24,4 @@ else
   config :craft, Craft.ClockBound.Adapter, impl: Craft.ClockBound.Clock
 end
 
-config :craft, :clock_bound, shm_path: "/var/run/clockbound/shm"
+config :craft, :clock_bound, shm_path: "/var/run/clockbound/shm0"

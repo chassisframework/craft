@@ -42,6 +42,7 @@ defmodule Craft.ClockBound.Client do
                       [:clock_bound, :shm_path],
                       "/var/run/clockbound/shm"
                     )
+  @clockbound_version 2
 
   defstruct [
     :earliest,
@@ -113,6 +114,12 @@ defmodule Craft.ClockBound.Client do
     {:error, :max_drift_too_large}
   end
 
+  # If the version does not match the currently supported version, the data format may be incompatible
+  defp compute_bound_at(_real, _monotonic_before, _monotonic_after, %{version: version})
+       when version != @clockbound_version do
+    {:error, :incompatible_clockbound_version}
+  end
+
   defp compute_bound_at(real, monotonic_before, monotonic_after, clockbound_data) do
     %{
       as_of: as_of,
@@ -159,8 +166,9 @@ defmodule Craft.ClockBound.Client do
         segment_size::unsigned-native-32, version::unsigned-native-16,
         generation::unsigned-native-16, as_of_sec::signed-native-64, as_of_nsec::signed-native-64,
         void_after_sec::signed-native-64, void_after_nsec::signed-native-64,
-        bound::signed-native-64, max_drift::unsigned-native-32, _reserved::unsigned-native-32,
-        clock_status::signed-native-32, _padding::binary>> ->
+        bound::signed-native-64, disruption_marker::unsigned-native-64,
+        max_drift::unsigned-native-32, clock_status::signed-native-32,
+        clock_disruption_support::unsigned-native-8, _padding::binary>> ->
         {:ok,
          %{
            segment_size: segment_size,
@@ -169,8 +177,10 @@ defmodule Craft.ClockBound.Client do
            as_of: timespec_to_nanosecond({as_of_sec, as_of_nsec}),
            void_after: timespec_to_nanosecond({void_after_sec, void_after_nsec}),
            bound: bound,
+           disruption_marker: disruption_marker,
            max_drift: max_drift,
-           clock_status: decode_clock_status(clock_status)
+           clock_status: decode_clock_status(clock_status),
+           clock_disruption_support: clock_disruption_support
          }}
 
       _ ->
@@ -189,5 +199,6 @@ defmodule Craft.ClockBound.Client do
   defp decode_clock_status(0), do: :unknown
   defp decode_clock_status(1), do: :synchronized
   defp decode_clock_status(2), do: :free_running
+  defp decode_clock_status(3), do: :disrupted
   defp decode_clock_status(_), do: :invalid
 end
