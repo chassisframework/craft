@@ -55,11 +55,13 @@ defmodule Craft do
     for node <- nodes do
       {:ok, _pid} = :rpc.call(node, Craft.MemberSupervisor, :start_member, [name, opts])
     end
+
+    Craft.MemberCache.discover(name, nodes)
   end
 
   @doc "Stops all members of the raft group"
   def stop_group(name) do
-    with {:ok, %{members: members}} <- with_leader_redirect(name, &configuration(name, &1)) do
+    with {:ok, %{members: members}} <- with_leader_redirect(name, &safe_configuration(name, &1)) do
       results =
         members
         |> Members.all_nodes()
@@ -89,7 +91,7 @@ defmodule Craft do
 
     case :rpc.call(node, Craft.MemberSupervisor, :start_member, [name]) do
       {:error, :not_found} ->
-        {:ok, config} = with_leader_redirect(name, &configuration(name, &1))
+        {:ok, config} = with_leader_redirect(name, &Consensus.configuration(name, &1))
 
         {%{
           members: members,
@@ -264,14 +266,14 @@ defmodule Craft do
 
   @doc false
   def state(name) do
-    {:ok, %{members: members}} = with_leader_redirect(name, &configuration(name, &1))
+    {:ok, %{members: members}} = with_leader_redirect(name, &Consensus.configuration(name, &1))
 
     members.voting_nodes
     |> MapSet.union(members.non_voting_nodes)
     |> Enum.into(%{}, &state(name, &1))
   end
 
-  defp configuration(name, node) do
+  defp safe_configuration(name, node) do
     try do
       Consensus.configuration(name, node)
     catch :exit, e ->

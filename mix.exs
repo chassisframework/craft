@@ -34,7 +34,7 @@ defmodule Craft.MixProject do
 
   defp deps do
     [
-      {:rocksdb, "~> 1.9"}
+      {:rocksdb, git: "git@github.com:chassisframework/erlang-rocksdb.git"}
     ]
   end
 

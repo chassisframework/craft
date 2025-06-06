@@ -38,22 +38,8 @@ defmodule Craft.Application do
     pid
   end
 
-  if Mix.env() in [:dev, :test] do
-    defp silence_sasl_logger do
-      Logger.add_translator({Craft.SASLLoggerTranslator, :translate})
-    end
-
-    defp ensure_disterl! do
-      case Node.start(:craft, :shortnames) do
-        {:ok, _} ->
-          :ok
-
-        {:error, {:already_started, _}} ->
-          :ok
-      end
-    end
-
-    defp create_data_dir! do
+  defp create_data_dir! do
+    if Application.get_env(:craft, :base_data_dir) do
       data_dir =
         Path.join([
           Application.get_env(:craft, :base_data_dir),
@@ -64,10 +50,24 @@ defmodule Craft.Application do
       File.mkdir_p!(data_dir)
 
       Application.put_env(:craft, :data_dir, data_dir)
+    else
+      Application.fetch_env!(:craft, :data_dir) |> File.mkdir_p!()
+    end
+  end
+
+  if Mix.env() in [:dev, :test] do
+    defp silence_sasl_logger do
+      Logger.add_translator({Craft.SASLLoggerTranslator, :translate})
+    end
+
+    defp ensure_disterl! do
+      case Node.start(:craft, :shortnames) do
+        {:ok, _} -> :ok
+        {:error, {:already_started, _}} -> :ok
+      end
     end
   else
     defp silence_sasl_logger, do: :noop
-    defp ensure_disterl!, do: raise "Craft requires the node to be in distributed mode."
-    defp create_data_dir!, do: Application.get_env(:craft, :data_dir) |> File.mkdir_p!()
+    defp ensure_disterl!, do: raise("Craft requires the node to be in distributed mode.")
   end
 end

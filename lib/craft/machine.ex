@@ -21,10 +21,12 @@ defmodule Craft.Machine do
   @type role :: :receiving_snapshot | :lonely | :follower | :candidate | :leader
 
   @callback init(Craft.group_name()) :: {:ok, private()}
-  @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
+  @callback handle_command(Craft.command(), Craft.log_index(), private()) ::
+              {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
   @callback handle_query(Craft.query(), private()) :: Craft.reply()
   @callback handle_role_change(role(), private()) :: private()
-  @optional_callbacks handle_role_change: 2
+  @callback handle_info({:user_message, term()}, private()) :: private()
+  @optional_callbacks handle_role_change: 2, handle_info: 2
 
   defmodule MutableMachine do
     @type private() :: Craft.Machine.private()
@@ -69,7 +71,11 @@ defmodule Craft.Machine do
       end
     end
   else
-    defmacrop notify_nexus(_state, _message, _conditional), do: (quote do :noop end)
+    defmacrop notify_nexus(_state, _message, _conditional),
+      do:
+        (quote do
+           :noop
+         end)
   end
 
   def start_link(args) do
@@ -130,7 +136,9 @@ defmodule Craft.Machine do
 
     state.name
     |> lookup(__MODULE__)
-    |> GenServer.cast({:quorum_reached, state.commit_index, state.persistence, should_snapshot?, lease_expires_at})
+    |> GenServer.cast(
+      {:quorum_reached, state.commit_index, state.persistence, should_snapshot?, lease_expires_at}
+    )
   end
 
   def command(name, node, command, opts \\ []) do
@@ -153,7 +161,8 @@ defmodule Craft.Machine do
         timeout ->
           {:error, :timeout}
       end
-    else e ->
+    else
+      e ->
         {:error, e}
     end
   end
@@ -171,7 +180,13 @@ defmodule Craft.Machine do
       :logger.update_process_metadata(%{gl: remote_group_leader})
     end
 
-    {:ok, %State{name: args.name, module: args.machine, global_clock: args[:global_clock], nexus_pid: args[:nexus_pid]}}
+    {:ok,
+     %State{
+       name: args.name,
+       module: args.machine,
+       global_clock: args[:global_clock],
+       nexus_pid: args[:nexus_pid]
+     }}
   end
 
   @impl true
@@ -202,11 +217,21 @@ defmodule Craft.Machine do
         state.private
       end
 
-    {:noreply, %State{state | role: new_role, private: private, client_commands: %{}, client_query_results: []}}
+    {:noreply,
+     %State{
+       state
+       | role: new_role,
+         private: private,
+         client_commands: %{},
+         client_query_results: []
+     }}
   end
 
   @impl true
-  def handle_cast({:quorum_reached, new_commit_index, log, should_snapshot?, lease_expires_at}, state) do
+  def handle_cast(
+        {:quorum_reached, new_commit_index, log, should_snapshot?, lease_expires_at},
+        state
+      ) do
     notify_nexus(state, {:lease_taken, node(), lease_expires_at}, !!lease_expires_at)
 
     state =
@@ -234,7 +259,7 @@ defmodule Craft.Machine do
     # only snapshot up to one entry before the latest, since we need the prev log entry to create AppendEntries
 
     state =
-      Enum.reduce(state.last_applied+1..new_commit_index//1, state, fn index, state ->
+      Enum.reduce((state.last_applied + 1)..new_commit_index//1, state, fn index, state ->
         case Persistence.fetch(log, index) do
           {:ok, %EmptyEntry{}} ->
             state
@@ -301,7 +326,12 @@ defmodule Craft.Machine do
               state.private
           end
         else
-          :ok = Consensus.snapshot_ready(state.name, state.last_applied, state.module.snapshot(state.private))
+          :ok =
+            Consensus.snapshot_ready(
+              state.name,
+              state.last_applied,
+              state.module.snapshot(state.private)
+            )
 
           state.private
         end
@@ -325,8 +355,13 @@ defmodule Craft.Machine do
   #     - otherwise, the query will time out
   #
   @impl true
-  def handle_cast({{:query, :linearizable}, {from, _ref} = id, query}, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
-    if state.lease_expires_at && GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) > 0 do
+  def handle_cast(
+        {{:query, :linearizable}, {from, _ref} = id, query},
+        %State{role: :leader, global_clock: global_clock} = state
+      )
+      when not is_nil(global_clock) do
+    if state.lease_expires_at &&
+         GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) > 0 do
       send(from, {id, state.module.handle_query(query, state.private)})
     else
       send(from, {id, {:error, :not_leaseholder}})
@@ -424,7 +459,9 @@ defmodule Craft.Machine do
 
         {private, last_applied}
       else
-        private = state.module.receive_snapshot(install_snapshot.log_entry.machine_private, state.private)
+        private =
+          state.module.receive_snapshot(install_snapshot.log_entry.machine_private, state.private)
+
         last_applied = install_snapshot.log_index
 
         {private, last_applied}
@@ -438,6 +475,18 @@ defmodule Craft.Machine do
     machine_state = state.module.dump(state.private)
 
     {:reply, %{state: state, machine_state: machine_state}, state}
+  end
+
+  @impl true
+  def handle_info({:user_message, msg}, state) do
+    private =
+      if function_exported?(state.module, :handle_info, 2) do
+        state.module.handle_info(msg, state.private)
+      else
+         raise "Received message but #{state.module} has no `handle_info/2` defined"
+      end
+
+    {:noreply, %State{state | private: private}}
   end
 
   def ls_flat(path) do
@@ -471,6 +520,7 @@ defmodule Craft.Machine do
       else
         @behaviour LogStoredMachine
       end
+
       def __craft_mutable__(), do: unquote(mutable)
     end
   end
