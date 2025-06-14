@@ -329,10 +329,12 @@ defmodule Craft.Machine do
   #
   @impl true
   def handle_cast({{:query, :linearizable}, {from, _ref} = id, query}, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
-    if state.lease_expires_at && GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) > 0 do
+    with %GlobalTimestamp{} <- state.lease_expires_at,
+         {:ok, wait_time} when wait_time > 0 <- GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) do
       send(from, {id, state.module.handle_query(query, state.private)})
     else
-      send(from, {id, {:error, :not_leaseholder}})
+      _ ->
+        send(from, {id, {:error, :not_leaseholder}})
     end
 
     {:noreply, state}

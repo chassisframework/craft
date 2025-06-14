@@ -7,8 +7,8 @@ todo:
 - broadcast replication lag to clients, to allow them to target non-linearizable reads to specific followers
 - be consistent with "members" vs "nodes" nomenclature
 - snapshot deletion when no longer needed
-
-4.2.1 server catch up "rounds" hueristic
+- adaptive heartbeat intervals based on statistical analysis of full mesh ping times (send icmp via raw sockets)
+- 4.2.1 server catch up "rounds" hueristic
 
 done:
 - leader leases for linearizable reads

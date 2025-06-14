@@ -35,10 +35,11 @@ defmodule Craft.MemberCache do
 
   @doc false
   def holding_lease?(group_name) do
-    case :ets.lookup_element(__MODULE__, group_name, index(:lease_holder)) do
-      {lease_holder, global_clock, lease_expires_at} when lease_holder == node() ->
-        GlobalTimestamp.time_until_lease_expires(global_clock, lease_expires_at) > 0
+    with {lease_holder, global_clock, lease_expires_at} when lease_holder == node() <- :ets.lookup_element(__MODULE__, group_name, index(:lease_holder)),
+         {:ok, time} when time > 0 <- GlobalTimestamp.time_until_lease_expires(global_clock, lease_expires_at) do
+      true
 
+    else
       _ ->
         false
     end

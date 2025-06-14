@@ -708,24 +708,28 @@ defmodule Craft.Consensus do
     ]
 
     if data.global_clock do
-      {lease_wait_out_period, data} =
-        case data.lease_expires_at do
-          %GlobalTimestamp{} ->
-            lease_wait_out_period = time_until_lease_expires(data.global_clock, data.lease_expires_at)
+      case data.lease_expires_at do
+        %GlobalTimestamp{} ->
+          case GlobalTimestamp.time_until_lease_expires(data.global_clock, data.lease_expires_at) do
+            {:ok, lease_wait_out_period} ->
+              Logger.info("became leader, waiting #{lease_wait_out_period}ms for old lease to expire", logger_metadata(data))
 
-            Logger.info("became leader, waiting #{lease_wait_out_period}ms for old lease to expire", logger_metadata(data))
+              actions = [{{:timeout, :takeover}, lease_wait_out_period, data.lease_expires_at} | actions]
+              data = put_in(data.leader_state.waiting_for_lease, true)
 
-            {lease_wait_out_period, put_in(data.leader_state.waiting_for_lease, true)}
+              {:keep_state, data, actions}
 
-          _ ->
-            Logger.info("became leader, immediately taking lease", logger_metadata(data))
+            error ->
+              Logger.error("unable to determine global time for lease takeover, got #{inspect error}, becoming follower", logger_metadata(data))
 
-            {0, data}
-        end
+              {:next_state, :follower, data}
+          end
 
-      actions = [{{:timeout, :takeover}, lease_wait_out_period, data.lease_expires_at} | actions]
+        _ ->
+          Logger.info("became leader, immediately taking lease", logger_metadata(data))
 
-      {:keep_state, data, actions}
+          {:keep_state, data, actions}
+      end
     else
       Logger.info("became leader", logger_metadata(data))
 
@@ -750,21 +754,23 @@ defmodule Craft.Consensus do
   end
 
   def leader({:timeout, :takeover}, old_lease_expires_at, data) do
-    if data.leader_state.waiting_for_lease do
-      # don't assume that because our lease wait-out event fired that the lease has expired,
-      # our monotonic clock could be wrong, the user-provided clock source is the authority
-      wait_time = time_until_lease_expires(data.global_clock, old_lease_expires_at)
+    # don't assume that because our lease wait-out event fired that the lease has expired,
+    # our monotonic clock could be wrong, the user-provided clock source is the authority
+      case GlobalTimestamp.time_until_lease_expires(data.global_clock, old_lease_expires_at) do
+        {:ok, wait_time} ->
+          if wait_time == 0 do
+            Logger.info("taking over lease", logger_metadata(data))
 
-      if wait_time == 0 do
-        Logger.info("taking over lease", logger_metadata(data))
+            {:keep_state, put_in(data.leader_state.waiting_for_lease, false)}
+          else
+            {:keep_state_and_data, [{{:timeout, :takeover}, wait_time, old_lease_expires_at}]}
+          end
 
-        {:keep_state, put_in(data.leader_state.waiting_for_lease, false)}
-      else
-        {:keep_state_and_data, [{{:timeout, :takeover}, wait_time, old_lease_expires_at}]}
+        error ->
+          Logger.warning("unable to acquire lease, global clock error: #{inspect error}, becoming follower", logger_metadata(data))
+
+          {:next_state, :follower, data}
       end
-    else
-      :keep_state_and_data
-    end
   end
 
   # ignore any messages from earlier terms
@@ -883,10 +889,17 @@ defmodule Craft.Consensus do
   end
 
   def leader({:call, from}, {:machine_command, command}, %State{global_clock: global_clock} = data) when not is_nil(global_clock) do
-    if time_until_lease_expires(data.global_clock, data.lease_expires_at) > 0 do
-      append_command(command, from, data)
-    else
-      {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
+    case GlobalTimestamp.time_until_lease_expires(data.global_clock, data.lease_expires_at) do
+      {:ok, time} when time > 0 ->
+        append_command(command, from, data)
+
+      {:ok, 0} ->
+        {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
+
+      error ->
+        Logger.error("unable to determine global time for command, got #{inspect error}, becoming follower", logger_metadata(data))
+
+        {:next_state, :follower, data, [{:reply, from, {:error, :not_leaseholder}}]}
     end
   end
 
@@ -988,9 +1001,9 @@ defmodule Craft.Consensus do
             State.set_lease_expires_at(state, GlobalTimestamp.add(now, @leader_lease_period, :millisecond))
 
           error ->
-            Logger.error("error determining global time, got '#{inspect error}', halting", logger_metadata(state))
+            Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state))
 
-            throw({:stop, {:bad_clock, error}})
+            throw({:next_state, :follower, state})
         end
       else
         state
@@ -1018,13 +1031,6 @@ defmodule Craft.Consensus do
         state
       end
     end)
-  end
-
-  defp time_until_lease_expires(global_clock, lease_expires_at) do
-    {:ok, %GlobalTimestamp{earliest: now_earliest}} = GlobalTimestamp.now(global_clock)
-
-    # if the lease has already expired, report 0
-    max(0, DateTime.diff(lease_expires_at.latest, now_earliest, :millisecond))
   end
 
   defp append_command(command, from, data) do
