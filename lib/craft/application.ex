@@ -6,6 +6,7 @@ defmodule Craft.Application do
   @impl Application
   def start(_type, _args) do
     silence_sasl_logger()
+    set_nexus_logger()
 
     case :net_kernel.get_state() do
       %{started: :no} ->
@@ -60,6 +61,10 @@ defmodule Craft.Application do
   end
 
   if Mix.env() in [:dev, :test] do
+    defp set_nexus_logger do
+      Logger.add_handlers(:craft)
+    end
+
     defp silence_sasl_logger do
       Logger.add_translator({Craft.SASLLoggerTranslator, :translate})
     end
@@ -71,6 +76,7 @@ defmodule Craft.Application do
       end
     end
   else
+    defp set_nexus_logger, do: :noop
     defp silence_sasl_logger, do: :noop
     defp ensure_disterl!, do: raise("Craft requires the node to be in distributed mode.")
   end

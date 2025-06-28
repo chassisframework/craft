@@ -228,8 +228,8 @@ defmodule Craft do
   end
 
   @doc "Requests a different leader than the current."
-  def step_down(name, node) do
-    :gen_statem.cast({Consensus.name(name), node}, :step_down)
+  def step_down(name) do
+    with_leader_redirect(name, &Consensus.step_down(name, &1))
   end
 
   defp with_leader_redirect(name, func) do

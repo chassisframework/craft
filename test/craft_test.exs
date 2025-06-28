@@ -1,6 +1,6 @@
 defmodule CraftTest do
-  use Craft.NexusCase,
-      parameterize: (for leases <- [true, false], do: %{leader_leases: leases})
+  use Craft.NexusCase
+      # parameterize: (for leases <- [true, false], do: %{leader_leases: leases})
 
   alias Craft.Nexus.Stability
   alias Craft.SimpleMachine

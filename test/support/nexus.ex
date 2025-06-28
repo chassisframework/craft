@@ -8,6 +8,9 @@ defmodule Craft.Nexus do
   """
   use GenServer
 
+  @behaviour :logger_handler
+
+  alias Craft.Consensus
   alias Craft.Consensus.State, as: ConsensusState
   alias Craft.GlobalTimestamp
 
@@ -70,10 +73,12 @@ defmodule Craft.Nexus do
     GenServer.call(nexus, :return_state_and_stop)
   end
 
+  @impl GenServer
   def init([members, test_process]) do
     {:ok, %State{members: members, test_process: test_process}}
   end
 
+  @impl GenServer
   def handle_call({:wait_until, {module, opts}}, from, state) do
     {:noreply, %{state | wait_until: {from, &module.handle_event/2, module.init(state, opts)}}}
   end
@@ -96,8 +101,9 @@ defmodule Craft.Nexus do
     {:stop, :normal, {:ok, state}, state}
   end
 
+  @impl GenServer
   def handle_cast({_time, {:cast, to, from, message}}, state) do
-    {_, to_node} = to
+    {name, to_node} = to
     event = {:cast, to_node, from, message}
 
     state =
@@ -119,22 +125,23 @@ defmodule Craft.Nexus do
                 State.record_event(state, {DateTime.utc_now(), {:DROPPED, event}})
 
               :forward ->
-                :gen_statem.cast(to, message)
+                Consensus.remote_operation(name, to_node, :cast, message)
                 State.record_event(state, {DateTime.utc_now(), event})
 
               {:forward, modified_message} ->
                 event = {:cast, to_node, from, modified_message}
+                Consensus.remote_operation(name, to_node, :cast, modified_message)
                 State.record_event(state, {DateTime.utc_now(), event})
 
               {:delay, msecs} ->
-                :timer.apply_after(msecs, :gen_statem, :cast, [to, message])
+                :timer.apply_after(msecs, Consensus, :remote_operation, [name, to_node, :cast, message])
                 State.record_event(state, {DateTime.utc_now(), event})
             end
 
           %{state | nemesis: {nemesis, private}}
 
         _ ->
-          :gen_statem.cast(to, message)
+          Consensus.remote_operation(name, to_node, :cast, message)
 
           State.record_event(state, {DateTime.utc_now(), event})
       end
@@ -158,7 +165,7 @@ defmodule Craft.Nexus do
   def handle_cast({_time, {:machine, {:lease_taken, node, lease_expires_at}}} = event, %State{lease: nil} = state) do
     state =
       %{state | lease: {node, lease_expires_at}}
-      |> State.record_event({DateTime.utc_now(), event})
+      |> State.record_event(event)
 
     {:noreply, state}
   end
@@ -167,7 +174,7 @@ defmodule Craft.Nexus do
   def handle_cast({_time, {:machine, {:lease_taken, node, lease_expires_at}}} = event, %State{lease: {node, _old_lease}} = state) do
     state =
       %{state | lease: {node, lease_expires_at}}
-      |> State.record_event({DateTime.utc_now(), event})
+      |> State.record_event(event)
 
     {:noreply, state}
   end
@@ -181,18 +188,33 @@ defmodule Craft.Nexus do
         Process.exit(state.test_process, :lease_overlap)
 
         %{state | lease: {new_node, new_lease_expires_at}}
-        |> State.record_event({DateTime.utc_now(), event})
+        |> State.record_event(event)
 
       else
         %{state | lease: {new_node, new_lease_expires_at}}
-        |> State.record_event({DateTime.utc_now(), event})
+        |> State.record_event(event)
       end
 
     {:noreply, state}
   end
 
+  def handle_cast({:log, %{msg: {:string, "became leader" <> _}} = event}, state) do
+    state =
+      state
+      |> State.record_event(event)
+      |> State.leader_elected(event.meta.node, event.meta.term)
+      |> evaluate_waiter(event)
+
+    {:noreply, state}
+  end
+
   def handle_cast(event, state) do
-    {:noreply, State.record_event(state, {DateTime.utc_now(), event})}
+    {:noreply, State.record_event(state, event)}
+  end
+
+  @impl :logger_handler
+  def log(event, _config) do
+    GenServer.cast(event.meta.nexus, {:log, event})
   end
 
   defp evaluate_waiter(%State{wait_until: nil} = state, _event), do: state

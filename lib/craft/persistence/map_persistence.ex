@@ -114,6 +114,11 @@ defmodule Craft.Persistence.MapPersistence do
   end
 
   @impl true
+  def close(state) do
+    state
+  end
+
+  @impl true
   def dump(state) do
     state
   end

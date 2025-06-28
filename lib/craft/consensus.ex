@@ -35,8 +35,10 @@ defmodule Craft.Consensus do
   alias Craft.SnapshotServerClient
 
   require Logger
+  require Craft.Tracing
 
   import State, only: [logger_metadata: 1]
+  import Craft.Application, only: [via: 2]
 
   @behaviour :gen_statem
 
@@ -67,14 +69,14 @@ defmodule Craft.Consensus do
   #
 
   def command(name, command) do
-    :gen_statem.call({name(name), node()}, {:machine_command, command})
+    :gen_statem.call(via(name, __MODULE__), {:machine_command, command})
   end
 
   def cast_user_command(name, node, msg, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5_000)
     id = {self(), make_ref()}
 
-    :gen_statem.cast({name(name), node}, {:user_command, id, msg})
+    remote_operation(name, node, :cast, {:user_command, id, msg})
 
     receive do
       {^id, reply} ->
@@ -87,19 +89,19 @@ defmodule Craft.Consensus do
   end
 
   def state(name, node) do
-    :gen_statem.call({name(name), node}, :state)
+    remote_operation(name, node, :call, :state)
   end
 
   def configuration(name, node) do
-    :gen_statem.call({name(name), node}, :configuration)
+    remote_operation(name, node, :call, :configuration)
   end
 
   def add_member(name, node, member) do
-    :gen_statem.call({name(name), node}, {:add_member, member})
+    remote_operation(name, node, :call, {:add_member, member})
   end
 
   def remove_member(name, node, member) do
-    :gen_statem.call({name(name), node}, {:remove_member, member})
+    remote_operation(name, node, :call, {:remove_member, member})
   end
 
   def transfer_leadership(name, node, to_node) do
@@ -110,11 +112,21 @@ defmodule Craft.Consensus do
     cast_user_command(name, node, :transfer_leadership)
   end
 
-  def snapshot_ready(name, index, path) do
-    :gen_statem.call({name(name), node()}, {:snapshot_ready, index, path})
+  def step_down(name, node) do
+    remote_operation(name, node, :cast, :step_down)
   end
 
-  def name(name), do: Module.concat(__MODULE__, name)
+  def snapshot_ready(name, index, path) do
+    :gen_statem.call(via(name, __MODULE__), {:snapshot_ready, index, path})
+  end
+
+  # we can't use the {name, node} form, since `name` must be an atom, and we allow anything to be a group name
+  # so we use the component registry on the remote node
+  def remote_operation(name, node, operation, msg) do
+    :rpc.call(node, __MODULE__, :do_operation, [operation, name, msg])
+  end
+  def do_operation(:cast, name, msg), do: :gen_statem.cast(via(name, __MODULE__), msg)
+  def do_operation(:call, name, msg), do: :gen_statem.call(via(name, __MODULE__), msg)
 
   #
   # genstatem implementation
@@ -123,14 +135,26 @@ defmodule Craft.Consensus do
   def callback_mode, do: [:state_functions, :state_enter]
 
   def start_link(args) do
-    :gen_statem.start_link({:local, name(args.name)}, __MODULE__, args, [])
+    :gen_statem.start_link(via(args.name, __MODULE__), __MODULE__, args, [])
   end
 
   def init(args) do
-    Logger.metadata(name: args.name, node: node())
+    Logger.metadata(name: args.name, node: node(), nexus: args[:nexus_pid])
+    data = State.new(args.name, args[:nodes], args.persistence, args.machine, args[:global_clock], args[:nexus_pid])
 
-    data = State.new(args.name, args[:nodes], args.persistence, args.machine, args[:global_clock])
+    if data.nexus_pid do
+      remote_group_leader = :rpc.call(node(data.nexus_pid), Process, :whereis, [:init])
+      :logger.update_process_metadata(%{gl: remote_group_leader})
+    end
 
+    if args[:manual_start] do
+      {:ok, :waiting_to_start, data}
+    else
+      {:ok, :lonely, continue_init(data)}
+    end
+  end
+
+  defp continue_init(data) do
     MemberCache.update(data)
 
     {:ok, snapshot} = Machine.init_or_restore(data)
@@ -141,7 +165,7 @@ defmodule Craft.Consensus do
       Logger.info("consensus process started, no global clock present, leader leases disabled")
     end
 
-    {:ok, :lonely, %{data | snapshot: snapshot}}
+    %{data | snapshot: snapshot}
   end
 
   def child_spec(args) do
@@ -149,6 +173,20 @@ defmodule Craft.Consensus do
       id: __MODULE__,
       start: {__MODULE__, :start_link, [args]}
     }
+  end
+
+  #
+  # manual start (test only)
+  #
+
+  if Mix.env() == :test do
+    def waiting_to_start(:enter, _, _data), do: :keep_state_and_data
+    def waiting_to_start(:cast, :run, data) do
+      data = continue_init(data)
+
+      {:next_state, data.state, data, []}
+    end
+    # def ready_to_test({:call, _from}, :catch_up, _data), do: {:keep_state_and_data, [:postpone]}
   end
 
   #

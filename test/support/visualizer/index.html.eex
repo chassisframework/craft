@@ -1,0 +1,56 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>Timeline | Basic demo</title>
+
+  <style type="text/css">
+   body, html {
+       font-family: sans-serif;
+   }
+
+   .vis-item.vis-background.negative {
+       background-color: rgba(255, 0, 0, 0.2);
+   }
+  </style>
+
+  <script type="text/javascript" src="https://unpkg.com/vis-timeline@latest/standalone/umd/vis-timeline-graph2d.min.js"></script>
+  <link href="https://unpkg.com/vis-timeline@latest/styles/vis-timeline-graph2d.min.css" rel="stylesheet" type="text/css" />
+</head>
+<body>
+<div id="visualization"></div>
+
+<script type="text/javascript">
+  var container = document.getElementById('visualization');
+
+ var groups = new vis.DataSet([
+     <%= for node <- @nodes do %>
+        {id: '<%= node %>', content: '<%= node %>'},
+     <% end %>
+ ])
+
+  var items = new vis.DataSet([
+      <%= for {event, id} <- Enum.with_index(@events) do %>
+        <%= case event[:type] do %>
+          <% :new_state -> %>
+            {id: <%= id %>, group: '<%= event[:node] %>', content: 'became <%= event[:new_state] %>', start: '<%= event[:occurred_at] %>'},
+          <% :begin_pre_vote -> %>
+            {id: <%= id %>, group: '<%= event[:node] %>', content: 'began pre-vote', start: '<%= event[:occurred_at] %>'},
+          <% :heartbeat -> %>
+            {id: <%= id %>, group: '<%= event[:node] %>', content: 'heartbeat', start: '<%= event[:occurred_at] %>'},
+          <% :check_quorum -> %>
+            {id: <%= id %>, group: '<%= event[:node] %>', content: 'check quorum', start: '<%= event[:occurred_at] %>'},
+        <% end %>
+      <% end %>
+      <%= for term <- @terms do %>
+        {type: 'background', id: 'term_<%= term.term %>', content: 'Term <%= term.term %>', start: '<%= term.started_at %>', end: '<%= term.ended_at %>', className: '<%= if rem(term.term, 2) == 0, do: "negative", else: "" %>'},
+      <% end %>
+  ]);
+
+  var options = {};
+
+  var timeline = new vis.Timeline(container, null, options);
+  timeline.setGroups(groups);
+  timeline.setItems(items);
+</script>
+</body>
+</html>
