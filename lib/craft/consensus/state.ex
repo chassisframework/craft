@@ -12,7 +12,7 @@ defmodule Craft.Consensus.State do
   require Logger
 
   defstruct [
-    :state,
+    {:state, :lonely},
     :name,
     :members,
     :persistence,
@@ -32,7 +32,7 @@ defmodule Craft.Consensus.State do
     :incoming_snapshot_transfer # receiving_snapshot only
   ]
 
-  def new(name, nodes, persistence, machine, global_clock) do
+  def new(name, nodes, persistence, machine, global_clock, nexus_pid) do
     persistence = Persistence.new(name, persistence)
 
     # if we're restoring state from disk, search the log backwards for group members
@@ -63,7 +63,8 @@ defmodule Craft.Consensus.State do
         members: members,
         persistence: persistence,
         machine: machine,
-        global_clock: global_clock
+        global_clock: global_clock,
+        nexus_pid: nexus_pid
       }
 
     case Metadata.fetch(persistence) do
@@ -206,28 +207,5 @@ defmodule Craft.Consensus.State do
     end
 
     %{state | snapshot: {index, path_or_content}, persistence: persistence}
-  end
-
-  def logger_metadata(%__MODULE__{} = state, extras \\ []) do
-    color =
-      case state.state do
-        :lonely ->
-          :light_red
-
-        :receiving_snapshot ->
-          :magenta
-
-        :follower ->
-          :cyan
-
-        :candidate ->
-          :blue
-
-        :leader ->
-          :green
-      end
-
-    # elixir uses the :time keyword, we want a higher resolution timestamp
-    Keyword.merge([name: state.name, term: state.current_term, ansi_color: color, t: Time.utc_now(), node: node()], extras)
   end
 end

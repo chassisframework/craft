@@ -1,5 +1,6 @@
 defmodule Craft.SimpleMachine do
   use Craft.Machine, mutable: false
+
   alias Craft.Linearizability.TestModel
 
   @behaviour TestModel

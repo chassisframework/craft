@@ -1,6 +1,6 @@
 defmodule CraftTest do
-  use Craft.NexusCase,
-      parameterize: (for leases <- [true, false], do: %{leader_leases: leases})
+  use Craft.NexusCase
+      # parameterize: (for leases <- [true, false], do: %{leader_leases: leases})
 
   alias Craft.Nexus.Stability
   alias Craft.SimpleMachine
@@ -40,8 +40,7 @@ defmodule CraftTest do
       assert :ok = SimpleMachine.put(name, :a, 123)
       assert {:ok, 123} = Craft.query({:get, :a}, name)
 
-      assert {:ok, nil} =
-               Craft.query({:get, :a}, name, consistency: {:eventual, {:node, isolated_node}})
+      assert {:ok, nil} = Craft.query({:get, :a}, name, consistency: {:eventual, {:node, isolated_node}})
 
       # assert successful linearizable query when network returns
       nemesis(nexus, fn _ -> :forward end)

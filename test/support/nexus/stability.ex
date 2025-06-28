@@ -15,20 +15,20 @@ defmodule Craft.Nexus.Stability do
     |> reset_counts()
   end
 
-  def handle_event({:cast, follower, leader, %AppendEntries{} = append_entries}, %State{leader: leader} = state) do
+  def handle_event(%{meta: %{trace: {:sent_msg, follower, %AppendEntries{} = append_entries}, node: leader}}, %State{leader: leader} = state) do
     counts = Map.update(state.counts, follower, {0, append_entries}, fn {num, _} -> {num, append_entries} end)
 
     wait_action(%{state | counts: counts})
   end
 
   # seeing a different leader causes counts to reset
-  def handle_event({:cast, _follower, leader, %AppendEntries{}}, state) do
+  def handle_event(%{meta: %{trace: {:sent_msg, _follower, %AppendEntries{}}, node: leader}}, state) do
     state = %{state | leader: leader} |> reset_counts()
 
     {:cont, state}
   end
 
-  def handle_event({:cast, leader, follower, %AppendEntries.Results{} = append_entries_results}, %State{leader: leader} = state) do
+  def handle_event(%{meta: %{trace: {:sent_msg, leader, %AppendEntries.Results{} = append_entries_results}, node: follower}}, %State{leader: leader} = state) do
     counts =
       with true <- append_entries_results.success,
            {num, %AppendEntries{entries: []}} <- Map.get(state.counts, follower) do

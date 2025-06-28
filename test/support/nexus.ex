@@ -8,8 +8,14 @@ defmodule Craft.Nexus do
   """
   use GenServer
 
-  alias Craft.Consensus.State, as: ConsensusState
+  @behaviour :logger_handler
+
+  alias Craft.Consensus
   alias Craft.GlobalTimestamp
+
+  require Logger
+
+  import Craft.Tracing, only: [logger_metadata: 1]
 
   defmodule State do
     defstruct [
@@ -45,13 +51,9 @@ defmodule Craft.Nexus do
 
   defdelegate stop(pid), to: GenServer
 
-  def send_event(nexus, event) do
-    GenServer.cast(nexus, {DateTime.utc_now(), event})
-  end
-
-  def cast(nexus, to, message) do
-    send_event(nexus, {:cast, to, node(), message})
-  end
+  # def cast(nexus, to, message) do
+  #   GenServer.cast(nexus, {:cast, :os.system_time(:nanosecond), to, node(), message})
+  # end
 
   def wait_until(nexus, condition) do
     GenServer.call(nexus, {:wait_until, condition}, 10_000)
@@ -70,10 +72,14 @@ defmodule Craft.Nexus do
     GenServer.call(nexus, :return_state_and_stop)
   end
 
+  @impl GenServer
   def init([members, test_process]) do
+    Logger.metadata(node: node(), nexus: self())
+
     {:ok, %State{members: members, test_process: test_process}}
   end
 
+  @impl GenServer
   def handle_call({:wait_until, {module, opts}}, from, state) do
     {:noreply, %{state | wait_until: {from, &module.handle_event/2, module.init(state, opts)}}}
   end
@@ -83,6 +89,8 @@ defmodule Craft.Nexus do
   end
 
   def handle_call({:nemesis, fun}, _from, state) do
+    Logger.debug("nemesis activated", logger_metadata(trace: :nemesis_active))
+
     {:reply, :ok, %{state | nemesis: {fun, nil}}}
   end
 
@@ -96,103 +104,113 @@ defmodule Craft.Nexus do
     {:stop, :normal, {:ok, state}, state}
   end
 
-  def handle_cast({_time, {:cast, to, from, message}}, state) do
-    {_, to_node} = to
-    event = {:cast, to_node, from, message}
-
+  @impl GenServer
+  def handle_cast({:log, %{meta: %{trace: {:sent_msg, to_node, message}}} = event}, state) do
     state =
       case state.nemesis do
         {nemesis, private} ->
+          nemesis_event = {:cast, to_node, event.meta.node, message}
+
           {action, private} =
             case Function.info(nemesis, :arity) do
               {:arity, 1} ->
-                action = nemesis.(event)
+                action = nemesis.(nemesis_event)
                 {action, nil}
 
               {:arity, 2} ->
-                nemesis.(event, private)
+                nemesis.(nemesis_event, private)
             end
 
           state =
             case action do
               :drop ->
-                State.record_event(state, {DateTime.utc_now(), {:DROPPED, event}})
+                Logger.debug("dropped %{inspect message.__struct__} for #{to_node}", logger_metadata(trace: {:dropped_msg, to_node, message}))
+
+                state
 
               :forward ->
-                :gen_statem.cast(to, message)
-                State.record_event(state, {DateTime.utc_now(), event})
+                Consensus.remote_operation(event.meta.name, to_node, :cast, message)
+                State.record_event(state, event)
 
               {:forward, modified_message} ->
-                event = {:cast, to_node, from, modified_message}
-                State.record_event(state, {DateTime.utc_now(), event})
+                event = put_in(event.meta.event, {:sent_msg, to_node, modified_message})
+
+                Consensus.remote_operation(event.meta.name, to_node, :cast, modified_message)
+                State.record_event(state, event)
 
               {:delay, msecs} ->
-                :timer.apply_after(msecs, :gen_statem, :cast, [to, message])
-                State.record_event(state, {DateTime.utc_now(), event})
+                :timer.apply_after(msecs, Consensus, :remote_operation, [event.meta.name, to_node, :cast, message])
+
+                State.record_event(state, event)
             end
 
           %{state | nemesis: {nemesis, private}}
 
         _ ->
-          :gen_statem.cast(to, message)
+          Consensus.remote_operation(event.meta.name, to_node, :cast, message)
 
-          State.record_event(state, {DateTime.utc_now(), event})
+          State.record_event(state, event)
       end
 
     {:noreply, evaluate_waiter(state, event)}
   end
 
-  def handle_cast({_time, {:trace, from, :leader, :enter, :candidate, %ConsensusState{current_term: current_term}}} = event, state) do
+  def handle_cast({:log, %{meta: %{trace: {:became, :leader}, term: term, node: node}} = event}, state) do
     state =
       state
       |> State.record_event(event)
-      |> State.leader_elected(from, current_term)
+      |> State.leader_elected(node, term)
       |> evaluate_waiter(event)
 
     {:noreply, state}
   end
 
-  #
-  # check for lease invariant, leases must never overlap
-  #
-  def handle_cast({_time, {:machine, {:lease_taken, node, lease_expires_at}}} = event, %State{lease: nil} = state) do
+  # no lease yet
+  def handle_cast({:log, %{meta: %{trace: {:quorum_reached, %{lease_expires_at: lease_expires_at}}, node: node}} = event}, %State{lease: nil} = state) do
     state =
       %{state | lease: {node, lease_expires_at}}
-      |> State.record_event({DateTime.utc_now(), event})
+      |> State.record_event(event)
 
     {:noreply, state}
   end
 
   # current leaseholder extending lease
-  def handle_cast({_time, {:machine, {:lease_taken, node, lease_expires_at}}} = event, %State{lease: {node, _old_lease}} = state) do
-    state =
-      %{state | lease: {node, lease_expires_at}}
-      |> State.record_event({DateTime.utc_now(), event})
-
-    {:noreply, state}
+  def handle_cast({:log, %{meta: %{trace: {:quorum_reached, %{lease_expires_at: _lease_expires_at}}, node: node}} = event}, %State{lease: {node, _old_lease}} = state) do
+    handle_cast({:log, event}, %{state | lease: nil})
   end
 
   # lease takeover, check for lease overlap
-  def handle_cast({_time, {:machine, {:lease_taken, new_node, new_lease_expires_at}}} = event, state) do
+  def handle_cast({:log, %{meta: %{trace: {:quorum_reached, %{lease_expires_at: new_lease_expires_at}}, node: new_node}} = event}, state) do
     {_old_leaseholder, %GlobalTimestamp{latest: old_lease_latest}} = state.lease
 
+    if DateTime.compare(new_lease_expires_at.earliest, old_lease_latest) != :gt do
+      Process.exit(state.test_process, :lease_overlap)
+    end
+
     state =
-      if DateTime.compare(new_lease_expires_at.earliest, old_lease_latest) != :gt do
-        Process.exit(state.test_process, :lease_overlap)
-
-        %{state | lease: {new_node, new_lease_expires_at}}
-        |> State.record_event({DateTime.utc_now(), event})
-
-      else
-        %{state | lease: {new_node, new_lease_expires_at}}
-        |> State.record_event({DateTime.utc_now(), event})
-      end
+      %{state | lease: {new_node, new_lease_expires_at}}
+      |> State.record_event(event)
 
     {:noreply, state}
   end
 
-  def handle_cast(event, state) do
-    {:noreply, State.record_event(state, {DateTime.utc_now(), event})}
+  def handle_cast({:log, %{meta: %{trace: {:became, :leader}}} = event}, state) do
+    state =
+      state
+      |> State.record_event(event)
+      |> State.leader_elected(event.meta.node, event.meta.term)
+      |> evaluate_waiter(event)
+
+    {:noreply, state}
+  end
+
+  def handle_cast({:log, event}, state) do
+    {:noreply, State.record_event(state, event)}
+  end
+
+  @impl :logger_handler
+  def log(event, _config) do
+    GenServer.cast(event.meta.nexus, {:log, event})
   end
 
   defp evaluate_waiter(%State{wait_until: nil} = state, _event), do: state

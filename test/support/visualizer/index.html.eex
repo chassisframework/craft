@@ -1,0 +1,98 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>Timeline | Basic demo</title>
+
+  <style type="text/css">
+   body, html {
+       font-family: sans-serif;
+   }
+
+   .vis-item.vis-background.lonely {
+       background-color: rgba(128, 128, 128, 0.9);
+   }
+
+   .vis-item.vis-background.follower {
+       background-color: rgba(0, 0, 0, 0.5);
+   }
+
+   .vis-item.vis-background.leader {
+       background-color: rgba(255, 255, 0, 0.5);
+   }
+
+   .vis-item.vis-background.candidate {
+       background-color: rgba(0, 0, 255, 0.5);
+   }
+  </style>
+
+  <script type="text/javascript" src="https://unpkg.com/vis-timeline@latest/standalone/umd/vis-timeline-graph2d.min.js"></script>
+  <link href="https://unpkg.com/vis-timeline@latest/styles/vis-timeline-graph2d.min.css" rel="stylesheet" type="text/css" />
+</head>
+<body>
+<div id="visualization"></div>
+
+<script type="text/javascript">
+  var container = document.getElementById('visualization');
+
+  var groups = new vis.DataSet([
+    <%= for node <- @nodes do %>
+      {id: '<%= node %>', content: '<%= node %>', showNested: false, nestedGroups: <%= inspect(Enum.map(@sub_groups[node], fn sub_group -> sub_group |> group_id(node) end)) %>},
+    <% end %>
+
+    <%= for {node, modules} <- @sub_groups do %>
+      <%= for module <- modules do %>
+          {id: '<%= group_id(module, node) %>', content: '<%= inspect(module) %>'},
+      <% end %>
+    <% end %>
+  ]);
+
+  var items = new vis.DataSet([
+    <%= for {node, role_periods} <- @role_periods do %>
+       <%= for {role, term, start, stop} <- role_periods do %>
+           {type: 'background',
+            id: 'role_periods_<%= node %>_<%= role %>_<%= start %>',
+            group: '<%= node %>',
+            content: '<%= role %> (term <%= term %>)',
+            start: '<%= start %>',
+            end: '<%= stop || @end_time %>',
+            className: '<%= role %>'},
+       <% end %>
+    <% end %>
+
+    <%= for {event, id} <- Enum.with_index(@events) do %>
+      <%= case event.meta.trace do %>
+        <% {:vote_requested, msg, info} -> %>
+            {id: <%= id %>, group: '<%= group_id(event) %>', content: (<%= msg.pre_vote %> ? "pre-" : "") + 'vote ' + (<%= info[:granted?] %> ? 'granted' : 'denied') , start: '<%= event.meta.t %>', title: '<%= format_struct(msg) %>'},
+
+        <% {:sent_msg, _to, msg} -> %>
+            {id: <%= id %>, group: '<%= group_id(event) %>', content: 'sent <%= message_type(msg) %>', start: '<%= event.meta.t %>', title: '<%= format_struct(msg) %>'},
+
+        <% {:dropped_msg, to, msg} -> %>
+            {id: <%= id %>, group: '<%= group_id(event) %>', content: 'DROPPED <%= message_type(msg) %> to <%= to %>', start: '<%= event.meta.t %>', title: '<%= format_struct(msg) %>'},
+
+        <% {:ignored_msg, msg} -> %>
+            {id: <%= id %>, group: '<%= group_id(event) %>', content: 'ignored message ', start: '<%= event.meta.t %>', title: '<%= format_struct(msg) %>'},
+
+        <% {:appended, entries} -> %>
+            {id: <%= id %>, group: '<%= group_id(event) %>', content: 'appended <%= Enum.count(entries) %> <%= if Enum.count(entries) == 1, do: "entry", else: "entries" %>', start: '<%= event.meta.t %>', title: '<%= format_struct(entries) %>'},
+
+        <% {:quorum_reached, metadata} -> %>
+            {id: <%= id %>, group: '<%= group_id(event) %>', content: 'quorum reached', start: '<%= event.meta.t %>', title: '<%= format_struct(metadata) %>'},
+
+        <% _ -> %>
+            {id: <%= id %>, group: '<%= group_id(event) %>', content: '<%= inspect event.meta.trace %>', start: '<%= event.meta.t %>'},
+        <% end %>
+    <% end %>
+  ]);
+
+  var options = {
+    min: '<%= List.first(@events).meta.t %>',
+    max: '<%= @end_time %>'
+  };
+
+  var timeline = new vis.Timeline(container, null, options);
+  timeline.setGroups(groups);
+  timeline.setItems(items);
+</script>
+</body>
+</html>

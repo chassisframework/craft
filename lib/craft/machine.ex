@@ -14,7 +14,10 @@ defmodule Craft.Machine do
   alias Craft.Persistence
   alias Craft.SnapshotServer.RemoteFile
 
+  import Craft.Tracing, only: [logger_metadata: 1]
   import Craft.Application, only: [via: 2, lookup: 2]
+
+  require Logger
 
   @type private :: any()
   @type snapshot :: any()
@@ -61,18 +64,6 @@ defmodule Craft.Machine do
       client_query_results: [],
       client_commands: %{}
     ]
-  end
-
-  if Mix.env() == :test do
-    defmacrop notify_nexus(state, message, conditional) do
-      quote do
-        if unquote(conditional) do
-          Craft.Nexus.send_event(unquote(state).nexus_pid, {:machine, unquote(message)})
-        end
-      end
-    end
-  else
-    defmacrop notify_nexus(_state, _message, _conditional), do: (quote do :noop end)
   end
 
   def start_link(args) do
@@ -169,6 +160,8 @@ defmodule Craft.Machine do
 
   @impl true
   def init(args) do
+    Logger.metadata(name: args.name, node: node(), nexus: args[:nexus_pid])
+
     if nexus_pid = args[:nexus_pid] do
       remote_group_leader = :rpc.call(node(nexus_pid), Process, :whereis, [:init])
       :logger.update_process_metadata(%{gl: remote_group_leader})
@@ -210,12 +203,20 @@ defmodule Craft.Machine do
 
   @impl true
   def handle_cast({:quorum_reached, new_commit_index, log, should_snapshot?, lease_expires_at}, state) do
-    notify_nexus(state, {:lease_taken, node(), lease_expires_at}, !!lease_expires_at)
+    Logger.debug(fn ->
+      metadata = %{}
+      metadata = if lease_expires_at, do: Map.put(metadata, :lease_expires_at, lease_expires_at), else: metadata
+      metadata = if new_commit_index > state.last_applied, do: Map.put(metadata, :new_commit_index, new_commit_index), else: metadata
+
+      {"quorum reached", logger_metadata(trace: {:quorum_reached, metadata})}
+    end)
 
     state =
       if state.role == :leader do
         # read-index based queries
         for {{from, _ref} = id, result} <- state.client_query_results do
+          Logger.debug("responding to client query", logger_metadata(trace: {:sending_client_response, %{from: from, id: id, result: result}}))
+
           send(from, {id, result})
         end
 
@@ -230,14 +231,6 @@ defmodule Craft.Machine do
         state
       end
 
-    # right now, this is a synchronous process, later we should allow for async snapshots at
-    # the provided index, and the user will call back when it's done (and we'll send a message
-    # to the consensus module to tell it that a snapshot at the given index completed)
-    #
-    # should probably provide sync/async semantics as well
-    #
-    # only snapshot up to one entry before the latest, since we need the prev log entry to create AppendEntries
-
     state =
       Enum.reduce(state.last_applied+1..new_commit_index//1, state, fn index, state ->
         case Persistence.fetch(log, index) do
@@ -247,7 +240,9 @@ defmodule Craft.Machine do
           {:ok, %MembershipEntry{}} ->
             state
 
-          {:ok, %CommandEntry{command: command}} ->
+          {:ok, %CommandEntry{command: command} = entry} ->
+            Logger.debug("applying command entry", logger_metadata(trace: {:applying_command, entry}))
+
             {reply, side_effects, private} =
               case state.module.handle_command(command, index, state.private) do
                 {reply, private} ->
@@ -279,11 +274,22 @@ defmodule Craft.Machine do
         end
       end)
 
+    #
+    # right now, snapshotting is a synchronous process, later we should allow for async snapshots at
+    # the provided index, and the user will call back when it's done (and we'll send a message
+    # to the consensus module to tell it that a snapshot at the given index completed)
+    #
+    # should probably provide sync/async semantics as well
+    #
+    # only snapshot up to one entry before the latest, since we need the prev log entry to create AppendEntries
+    #
     private =
       if should_snapshot? do
         if state.module.__craft_mutable__() do
           case state.module.snapshot(state.private) do
             {index, path, private} ->
+              Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
+
               :ok = Consensus.snapshot_ready(state.name, index, snapshot_info(path))
 
               private
@@ -293,6 +299,8 @@ defmodule Craft.Machine do
               state.private
           end
         else
+          Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
+
           :ok = Consensus.snapshot_ready(state.name, state.last_applied, state.module.snapshot(state.private))
 
           state.private
@@ -320,6 +328,8 @@ defmodule Craft.Machine do
   def handle_cast({{:query, :linearizable}, {from, _ref} = id, query}, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
     with %GlobalTimestamp{} <- state.lease_expires_at,
          {:ok, wait_time} when wait_time > 0 <- GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) do
+      Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, id, query}))
+
       send(from, {id, state.module.handle_query(query, state.private)})
     else
       _ ->
@@ -330,6 +340,8 @@ defmodule Craft.Machine do
   end
 
   def handle_cast({{:query, :linearizable}, id, query}, %State{role: :leader} = state) do
+    Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :quorum_read, id, query}))
+
     result = state.module.handle_query(query, state.private)
 
     {:noreply, %{state | client_query_results: [{id, result} | state.client_query_results]}}
@@ -346,6 +358,8 @@ defmodule Craft.Machine do
 
   def handle_cast({{:query, {:eventual, :leader}}, {from, _ref} = id, query}, state) do
     if state.role == :leader do
+      Logger.debug("executing query", logger_metadata(trace: {:query, :leader_eventual, :quorum_read, id, query}))
+
       send(from, {id, state.module.handle_query(query, state.private)})
     else
       case MemberCache.get(state.name) do
@@ -358,6 +372,8 @@ defmodule Craft.Machine do
   end
 
   def handle_cast({{:query, :eventual}, {from, _ref} = id, query}, state) do
+    Logger.debug("executing query", logger_metadata(trace: {:query, :eventual, :quorum_read, id, query}))
+
     result = state.module.handle_query(query, state.private)
 
     send(from, {id, result})
@@ -368,6 +384,8 @@ defmodule Craft.Machine do
   def handle_cast({:command, {from, _ref} = id, command}, state) do
     case Consensus.command(state.name, command) do
       {:ok, index} ->
+        Logger.debug("executed command", logger_metadata(trace: {:command, id, command}))
+
         {:noreply, %{state | client_commands: Map.put(state.client_commands, index, id)}}
 
       # not leader, not leaseholder, etc...
@@ -422,6 +440,8 @@ defmodule Craft.Machine do
   # delete on-disk machine files etc...
   @impl true
   def handle_call(:prepare_to_receive_snapshot, _from, state) do
+    Logger.debug("preparing to receive snapshot", logger_metadata(trace: :preparing_to_receive_snapshot))
+
     {:ok, data_dir, private} = state.module.prepare_to_receive_snapshot(state.private)
 
     {:reply, {:ok, data_dir}, %{state | private: private}}
@@ -429,6 +449,8 @@ defmodule Craft.Machine do
 
   @impl true
   def handle_call({:receive_snapshot, install_snapshot}, _from, state) do
+    Logger.debug("receiving snapshot", logger_metadata(trace: {:receiving_snapshot, install_snapshot}))
+
     {private, last_applied} =
       if state.module.__craft_mutable__() do
         private = state.module.receive_snapshot(state.private)

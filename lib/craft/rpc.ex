@@ -1,7 +1,6 @@
 defmodule Craft.RPC do
   @moduledoc false
 
-  alias Craft.Consensus
   alias Craft.Consensus.State
   alias Craft.Consensus.State.Members
   alias Craft.RPC.AppendEntries
@@ -49,11 +48,13 @@ defmodule Craft.RPC do
 
   if Mix.env() == :test do
     def send_message(message, to_node, state) do
-      Craft.Nexus.cast(state.nexus_pid, {Consensus.name(state.name), to_node}, message)
+      import Craft.Tracing, only: [logger_metadata: 2]
+      # the nexus is listening to the logger, when it sees a `:sent_msg` trace, it does the actual send itself
+      Logger.debug("sent #{inspect message.__struct__}", logger_metadata(state, trace: {:sent_msg, to_node, message}))
     end
   else
     def send_message(message, to_node, state) do
-      :gen_statem.cast({Consensus.name(state.name), to_node}, message)
+      Craft.Consensus.remote_operation(state.name, to_node, :cast, message)
     end
   end
 end
