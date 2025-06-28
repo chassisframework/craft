@@ -1,0 +1,87 @@
+<!DOCTYPE HTML>
+<html>
+<head>
+  <title>Timeline | Basic demo</title>
+
+  <style type="text/css">
+   body, html {
+       font-family: sans-serif;
+   }
+
+   /* .vis-item.vis-background.negative {
+      background-color: rgba(255, 0, 0, 0.2);
+      } */
+   .vis-item.vis-background.lonely {
+       background-color: rgba(0, 0, 0, 0.5);
+   }
+
+   .vis-item.vis-background.follower {
+       background-color: rgba(128, 128, 128, 0.9);
+   }
+
+   .vis-item.vis-background.leader {
+       background-color: rgba(255, 255, 0, 0.5);
+   }
+
+   .vis-item.vis-background.candidate {
+       background-color: rgba(0, 0, 255, 0.5);
+   }
+  </style>
+
+  <script type="text/javascript" src="https://unpkg.com/vis-timeline@latest/standalone/umd/vis-timeline-graph2d.min.js"></script>
+  <link href="https://unpkg.com/vis-timeline@latest/styles/vis-timeline-graph2d.min.css" rel="stylesheet" type="text/css" />
+</head>
+<body>
+<div id="visualization"></div>
+
+<script type="text/javascript">
+  var container = document.getElementById('visualization');
+
+ var groups = new vis.DataSet([
+     <%= for node <- @nodes do %>
+     {id: '<%= node %>', content: '<%= node %>'},
+     <% end %>
+ ])
+
+ var items = new vis.DataSet([
+     <%= for {node, role_periods} <- @role_periods do %>
+        <%= for {role, start, stop} <- role_periods do %>
+            {type: 'background',
+             id: 'role_periods_<%= node %>_<%= role %>_<%= start %>',
+             group: '<%= node %>',
+             content: '<%= role %>',
+             start: '<%= start %>',
+             end: '<%= stop %>',
+             className: '<%= role %>'},
+        <% end %>
+     <% end %>
+
+     <%= for {event, id} <- Enum.with_index(@events) do %>
+       <%= case event.meta.trace do %>
+         <% {:vote_requested, _msg, _info} -> %>
+             {id: <%= id %>, group: '<%= event.meta.node %>', content: 'vote requested <%=  %>', start: '<%= event.meta.t %>'},
+
+         <% {:sent_msg, _to, msg} -> %>
+             {id: <%= id %>, group: '<%= event.meta.node %>', content: '<%= (Module.split(msg.__struct__) -- ["Craft", "RPC"]) |> Enum.join(".") %>', start: '<%= event.meta.t %>'},
+
+         <% {:dropped_msg, to, msg} -> %>
+             {id: <%= id %>, group: '<%= event.meta.node %>', content: 'DROPPED <%= (Module.split(msg.__struct__) -- ["Craft", "RPC"]) |> Enum.join(".") %> to <%= to %>', start: '<%= event.meta.t %>'},
+
+         <% _ -> %>
+             {id: <%= id %>, group: '<%= event.meta.node %>', content: '<%= inspect event.meta.trace %>', start: '<%= event.meta.t %>'},
+         <% end %>
+     <% end %>
+
+     <%= for term <- @terms do %>
+        {type: 'background', id: 'term_<%= term.term %>', content: 'Term <%= term.term %>', start: '<%= term.started_at %>', end: '<%= term.ended_at %>', className: '<%= if rem(term.term, 2) == 0, do: "negative", else: "" %>'},
+     <% end %>
+ ]);
+
+ var options = {};
+
+  var timeline = new vis.Timeline(container, null, options);
+  timeline.setGroups(groups);
+  timeline.setItems(items);
+</script>
+</body>
+</html>

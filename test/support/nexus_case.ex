@@ -88,14 +88,9 @@ defmodule Craft.NexusCase do
         |> Map.fetch!(test_id)
         |> Craft.Nexus.return_state_and_stop()
 
-      log = Enum.sort_by(nexus_state.log, fn {time, _} -> time end, &(DateTime.compare(&1, &2) == :lt))
+      log = Enum.sort_by(nexus_state.log, & &1.meta.t)
 
-      lines =
-        log
-        |> Enum.map(&inspect/1)
-        |> Enum.intersperse("\n")
-
-      if lines != [] do
+      if log != [] do
         log_dir = "test_logs"
 
         File.mkdir_p!(log_dir)
@@ -108,17 +103,42 @@ defmodule Craft.NexusCase do
 
         [log_dir, filename]
         |> Path.join()
-        |> File.write!(lines)
+        |> File.write!(:erlang.term_to_binary(log))
       end
+
+      Craft.Visualizer.to_file(log)
 
       {:noreply, state}
     end
 
     @impl true
-    def handle_cast({:test_finished, %ExUnit.Test{tags: %{registered: %{test_id: test_id}}}}, state) do
-      if nexus = state[test_id] do
-        Craft.Nexus.stop(nexus)
+    def handle_cast({:test_finished, %ExUnit.Test{state: {:excluded, _}}}, state), do: {:noreply, state}
+
+    def handle_cast({:test_finished, %ExUnit.Test{tags: %{registered: %{test_id: test_id}}} = test}, state) do
+      {:ok, nexus_state} =
+        state
+        |> Map.fetch!(test_id)
+        |> Craft.Nexus.return_state_and_stop()
+
+      log = Enum.sort_by(nexus_state.log, & &1.meta.t)
+
+      if log != [] do
+        log_dir = "test_logs"
+
+        File.mkdir_p!(log_dir)
+
+        filename =
+          ["nexus", test.case, test.name, DateTime.to_unix(DateTime.utc_now()), "log"]
+          |> Enum.map(&to_string/1)
+          |> Enum.map(&String.replace(&1, ~r/[^\w\.]/, "_"))
+          |> Enum.join(".")
+
+        [log_dir, filename]
+        |> Path.join()
+        |> File.write!(:erlang.term_to_binary(log))
       end
+
+      Craft.Visualizer.to_file(log)
 
       {:noreply, state}
     end

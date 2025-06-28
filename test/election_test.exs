@@ -12,25 +12,15 @@ defmodule Craft.ElectionTest do
 
   @tag :unmanaged
   nexus_test "pre-chosen candidate becomes leader", %{nodes: nodes} do
-    state = State.new("abc", nodes, MapPersistence, SimpleMachine, nil)
+    candidate = Enum.random(nodes)
 
-    states =
-      Enum.zip(
-        nodes,
-        [
-          %{state | state: :candidate},
-          %{state | state: :lonely},
-          %{state | state: :lonely},
-          %{state | state: :lonely},
-          %{state | state: :lonely}
-        ]
-      )
+    {:ok, name, nexus} = TestGroup.start_group(nodes, manual_start: true)
 
-    expected_leader = List.first(nodes)
+    TestGroup.replace_consensus_state(name, candidate, %{state: :candidate})
 
-    {:ok, name, nexus} = TestGroup.start_group(states)
+    TestGroup.run(name, nodes)
 
-    assert %{leader: ^expected_leader, term: 0} = wait_until(nexus, {Stability, :all})
+    assert %{leader: ^candidate, term: 0} = wait_until(nexus, {Stability, :all})
 
     Craft.stop_group(name)
   end
@@ -38,10 +28,12 @@ defmodule Craft.ElectionTest do
   describe "5.4.1 election restriction" do
     @tag :unmanaged
     nexus_test "deny votes to out-of-date candidate, and correct its log", %{nodes: nodes} do
-      state = State.new("abc", nodes, MapPersistence, SimpleMachine, nil)
+      {:ok, name, nexus} = TestGroup.start_group(nodes, manual_start: true)
+
+      empty_persistence = State.new("abc", nodes, MapPersistence, SimpleMachine, nil, nil).persistence
 
       shared_log =
-        state.persistence
+        empty_persistence
         |> Persistence.append(%EmptyEntry{term: 0})
         |> Persistence.append(%EmptyEntry{term: 1})
 
@@ -57,21 +49,15 @@ defmodule Craft.ElectionTest do
         |> Persistence.append(%EmptyEntry{term: 3})
         |> Persistence.append(%EmptyEntry{term: 3})
 
-      states =
-        Enum.zip(
-          nodes,
-          [
-            %{state | state: :candidate, persistence: out_of_date_log},
-            %{state | state: :lonely, persistence: majority_log},
-            %{state | state: :lonely, persistence: majority_log},
-            %{state | state: :lonely, persistence: majority_log},
-            %{state | state: :lonely, persistence: majority_log},
-          ]
-        )
+      candidate = Enum.random(nodes)
 
-      {:ok, name, nexus} = TestGroup.start_group(states)
+      TestGroup.replace_consensus_state(name, candidate, %{state: :candidate, persistence: out_of_date_log})
 
-      candidate = List.first(nodes)
+      for node <- nodes -- [candidate] do
+        TestGroup.replace_consensus_state(name, node, %{persistence: majority_log})
+      end
+
+      TestGroup.run(name, nodes)
 
       assert %{leader: leader} = wait_until(nexus, {Stability, :all})
       assert leader != candidate
@@ -87,10 +73,12 @@ defmodule Craft.ElectionTest do
 
     @tag :unmanaged
     nexus_test "most up-to-date member in a split-brain is elected and corrects out-of-date logs", %{nodes: nodes} do
-      state = State.new("abc", nodes, MapPersistence, SimpleMachine, nil)
+      {:ok, name, nexus} = TestGroup.start_group(nodes, manual_start: true)
+
+      empty_persistence = State.new("abc", nodes, MapPersistence, SimpleMachine, nil, nil).persistence
 
       shared_log =
-        state.persistence
+        empty_persistence
         |> Persistence.append(%EmptyEntry{term: 0})
         |> Persistence.append(%EmptyEntry{term: 1})
 
@@ -106,28 +94,31 @@ defmodule Craft.ElectionTest do
         |> Persistence.append(%EmptyEntry{term: 4})
         |> Persistence.append(%EmptyEntry{term: 4})
 
-      # five member cluster, two nodes are out of contact on the other half of the split brain
-      states =
-        Enum.zip(
-          nodes,
-          [
-            %{state | state: :candidate, persistence: up_to_date_log},
-            %{state | state: :lonely, persistence: out_of_date_log},
-            %{state | state: :lonely, persistence: out_of_date_log},
-          ]
-        )
 
-      active_nodes = Keyword.keys(states)
+      {majority, _minority} = Enum.split(nodes, div(Enum.count(nodes), 2) + 1)
+      candidate = Enum.random(majority)
 
-      {:ok, name, nexus} = TestGroup.start_group(states)
+      TestGroup.replace_consensus_state(name, candidate, %{state: :candidate, persistence: up_to_date_log})
 
-      up_to_date_node = List.first(nodes)
+      for node <- majority -- [candidate] do
+        TestGroup.replace_consensus_state(name, node, %{persistence: out_of_date_log})
+      end
 
-      assert %{leader: ^up_to_date_node, term: 5} = wait_until(nexus, {Stability, :majority})
-      states = Map.new(active_nodes, &Craft.state(name, &1))
+      nemesis(nexus, fn {:cast, to, from, _msg} ->
+        if from in majority and to in majority do
+          :forward
+        else
+          :drop
+        end
+      end)
 
-      {_leader_state, {leader_log, _metadata}} = get_in(states, [up_to_date_node, :consensus])
-      for node <- active_nodes -- [up_to_date_node] do
+      TestGroup.run(name, nodes)
+
+      assert %{leader: ^candidate} = wait_until(nexus, {Stability, :majority})
+      states = Map.new(majority, &Craft.state(name, &1))
+
+      {_leader_state, {leader_log, _metadata}} = get_in(states, [candidate, :consensus])
+      for node <- majority -- [candidate] do
         {_follower_state, {follower_log, _metadata}} = get_in(states, [node, :consensus])
 
         assert follower_log == leader_log

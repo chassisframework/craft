@@ -36,7 +36,8 @@ defmodule Craft.Consensus do
 
   require Logger
 
-  import State, only: [logger_metadata: 1]
+  import Craft.Tracing, only: [logger_metadata: 1, logger_metadata: 2]
+  import Craft.Application, only: [via: 2]
 
   @behaviour :gen_statem
 
@@ -67,14 +68,14 @@ defmodule Craft.Consensus do
   #
 
   def command(name, command) do
-    :gen_statem.call({name(name), node()}, {:machine_command, command})
+    :gen_statem.call(via(name, __MODULE__), {:machine_command, command})
   end
 
   def cast_user_command(name, node, msg, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5_000)
     id = {self(), make_ref()}
 
-    :gen_statem.cast({name(name), node}, {:user_command, id, msg})
+    remote_operation(name, node, :cast, {:user_command, id, msg})
 
     receive do
       {^id, reply} ->
@@ -87,19 +88,19 @@ defmodule Craft.Consensus do
   end
 
   def state(name, node) do
-    :gen_statem.call({name(name), node}, :state)
+    remote_operation(name, node, :call, :state)
   end
 
   def configuration(name, node) do
-    :gen_statem.call({name(name), node}, :configuration)
+    remote_operation(name, node, :call, :configuration)
   end
 
   def add_member(name, node, member) do
-    :gen_statem.call({name(name), node}, {:add_member, member})
+    remote_operation(name, node, :call, {:add_member, member})
   end
 
   def remove_member(name, node, member) do
-    :gen_statem.call({name(name), node}, {:remove_member, member})
+    remote_operation(name, node, :call, {:remove_member, member})
   end
 
   def transfer_leadership(name, node, to_node) do
@@ -110,11 +111,21 @@ defmodule Craft.Consensus do
     cast_user_command(name, node, :transfer_leadership)
   end
 
-  def snapshot_ready(name, index, path) do
-    :gen_statem.call({name(name), node()}, {:snapshot_ready, index, path})
+  def step_down(name, node) do
+    remote_operation(name, node, :cast, :step_down)
   end
 
-  def name(name), do: Module.concat(__MODULE__, name)
+  def snapshot_ready(name, index, path) do
+    :gen_statem.call(via(name, __MODULE__), {:snapshot_ready, index, path})
+  end
+
+  # we can't use the {name, node} form, since `name` must be an atom, and we allow anything to be a group name
+  # so we use the component registry on the remote node
+  def remote_operation(name, node, operation, msg) do
+    :rpc.call(node, __MODULE__, :do_operation, [operation, name, msg])
+  end
+  def do_operation(:cast, name, msg), do: :gen_statem.cast(via(name, __MODULE__), msg)
+  def do_operation(:call, name, msg), do: :gen_statem.call(via(name, __MODULE__), msg)
 
   #
   # genstatem implementation
@@ -123,25 +134,37 @@ defmodule Craft.Consensus do
   def callback_mode, do: [:state_functions, :state_enter]
 
   def start_link(args) do
-    :gen_statem.start_link({:local, name(args.name)}, __MODULE__, args, [])
+    :gen_statem.start_link(via(args.name, __MODULE__), __MODULE__, args, [])
   end
 
   def init(args) do
-    Logger.metadata(name: args.name, node: node())
+    Logger.metadata(name: args.name, node: node(), nexus: args[:nexus_pid])
+    data = State.new(args.name, args[:nodes], args.persistence, args.machine, args[:global_clock], args[:nexus_pid])
 
-    data = State.new(args.name, args[:nodes], args.persistence, args.machine, args[:global_clock])
+    if data.nexus_pid do
+      remote_group_leader = :rpc.call(node(data.nexus_pid), Process, :whereis, [:init])
+      :logger.update_process_metadata(%{gl: remote_group_leader})
+    end
 
+    if args[:manual_start] do
+      {:ok, :waiting_to_start, data}
+    else
+      {:ok, :lonely, continue_init(data)}
+    end
+  end
+
+  defp continue_init(data) do
     MemberCache.update(data)
 
     {:ok, snapshot} = Machine.init_or_restore(data)
 
     if data.global_clock do
-      Logger.info("consensus process started, global clock present, leader leases enabled")
+      Logger.info("consensus process started, global clock present, leader leases enabled", logger_metadata(data))
     else
-      Logger.info("consensus process started, no global clock present, leader leases disabled")
+      Logger.info("consensus process started, no global clock present, leader leases disabled", logger_metadata(data))
     end
 
-    {:ok, :lonely, %{data | snapshot: snapshot}}
+    %{data | snapshot: snapshot}
   end
 
   def child_spec(args) do
@@ -149,6 +172,20 @@ defmodule Craft.Consensus do
       id: __MODULE__,
       start: {__MODULE__, :start_link, [args]}
     }
+  end
+
+  #
+  # manual start (test only)
+  #
+
+  if Mix.env() == :test do
+    def waiting_to_start(:enter, _, _data), do: :keep_state_and_data
+    def waiting_to_start(:cast, :run, data) do
+      data = continue_init(data)
+
+      {:next_state, data.state, data, []}
+    end
+    # def ready_to_test({:call, _from}, :catch_up, _data), do: {:keep_state_and_data, [:postpone]}
   end
 
   #
@@ -167,13 +204,13 @@ defmodule Craft.Consensus do
 
     Machine.update_role(data)
 
-    Logger.info("became lonely", logger_metadata(data))
+    Logger.info("became lonely", logger_metadata(data, trace: {:became, :lonely}))
 
     {:keep_state, data, [{:state_timeout, :rand.uniform(@election_timeout_jitter), :begin_pre_vote}]}
   end
 
   def lonely(:state_timeout, :begin_pre_vote, data) do
-    Logger.info("pre-vote started", logger_metadata(data))
+    Logger.info("pre-vote started", logger_metadata(data, trace: :pre_vote_started))
 
     RPC.request_vote(data, pre_vote: true)
 
@@ -181,7 +218,7 @@ defmodule Craft.Consensus do
   end
 
   def lonely(:state_timeout, :election_failed, data) do
-    Logger.info("pre-vote failed, repeating state", logger_metadata(data))
+    Logger.info("pre-vote failed, repeating state", logger_metadata(data, trace: :pre_vote_failed))
 
     :repeat_state_and_data
   end
@@ -196,7 +233,7 @@ defmodule Craft.Consensus do
   def lonely(:cast, %RequestVote{pre_vote: true} = request_vote, data) do
     vote_granted = State.vote_for?(data, request_vote)
 
-    Logger.info("#{if vote_granted, do: "granting", else: "denying"} pre-vote to #{request_vote.candidate_id}", logger_metadata(data))
+    Logger.debug("#{if vote_granted, do: "granting", else: "denying"} pre-vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: vote_granted}))
 
     RPC.respond_vote(request_vote, vote_granted, data)
 
@@ -211,7 +248,7 @@ defmodule Craft.Consensus do
         {false, data}
       end
 
-    Logger.info("#{if vote_granted, do: "granting", else: "denying"} vote to #{request_vote.candidate_id}", logger_metadata(data))
+    Logger.debug("#{if vote_granted, do: "granting", else: "denying"} vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: vote_granted}))
 
     RPC.respond_vote(request_vote, vote_granted, data)
 
@@ -219,21 +256,27 @@ defmodule Craft.Consensus do
   end
 
   def lonely(:cast, %RequestVote{pre_vote: false} = request_vote, data) do
+    Logger.debug("denying vote to #{request_vote.candidate_id}, already voted in this term", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: false}))
+
     RPC.respond_vote(request_vote, false, data)
 
     {:keep_state, data}
   end
 
   def lonely(:cast, %RequestVote.Results{pre_vote: true} = results, data) do
-    Logger.info("pre-vote #{if results.vote_granted, do: "granted", else: "denied"} by #{results.from}", logger_metadata(data))
+    Logger.debug("pre-vote #{if results.vote_granted, do: "granted", else: "denied"} by #{results.from}", logger_metadata(data, trace: {:vote_received, granted?: results.vote_granted, pre_vote?: true}))
 
     data = State.record_vote(data, results)
 
     case State.election_result(data) do
       :won ->
+        Logger.info("won pre-vote election", logger_metadata(data, trace: :won_pre_vote_election))
+
         {:next_state, :candidate, data}
 
       :lost ->
+        Logger.info("lost pre-vote election", logger_metadata(data, trace: :lost_pre_vote_election))
+
         {:repeat_state, data}
 
       :pending ->
@@ -270,7 +313,7 @@ defmodule Craft.Consensus do
   end
 
   def lonely(type, msg, data) do
-    Logger.info("ignoring #{inspect type} message #{inspect msg}", logger_metadata(data))
+    Logger.debug("ignoring #{inspect type} message #{inspect msg}", logger_metadata(data, trace: {:ignored_message, msg}))
 
     :keep_state_and_data
   end
@@ -290,12 +333,10 @@ defmodule Craft.Consensus do
 
     Machine.update_role(data)
 
-    Logger.info("became receiving_snapshot follower", logger_metadata(data))
+    Logger.info("became receiving_snapshot follower", logger_metadata(data, event: {:became, :receiving_snapshot}))
 
     {:keep_state, data, []}
   end
-
-  # def receiving_snapshot(:state_timeout, :become_lonely, data), do: {:next_state, :lonely, data}
 
   def receiving_snapshot(:cast, %InstallSnapshot{snapshot_transfer: s} = install_snapshot, %State{incoming_snapshot_transfer: {_pid, s}} = data) do
     Logger.info("ignoring identical snapshot transfer request")
@@ -383,7 +424,7 @@ defmodule Craft.Consensus do
 
     Machine.update_role(data)
 
-    Logger.info("became follower", logger_metadata(data))
+    Logger.info("became follower", logger_metadata(data, trace: {:became, :follower}))
 
     {:keep_state, data, [become_lonely_timeout()]}
   end
@@ -403,7 +444,7 @@ defmodule Craft.Consensus do
         {false, data}
       end
 
-    Logger.info("#{if vote_granted, do: "granting", else: "denying"} leadership transfer vote to #{request_vote.candidate_id}", logger_metadata(data))
+    Logger.info("#{if vote_granted, do: "granting", else: "denying"} leadership transfer vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: vote_granted}))
 
     RPC.respond_vote(request_vote, vote_granted, data)
 
@@ -412,7 +453,7 @@ defmodule Craft.Consensus do
 
   # followers are happy with the leader, they vote "no" to all non-transfer elections types, regardless of term
   def follower(:cast, %RequestVote{} = request_vote, data) do
-    Logger.info("denying #{if request_vote.pre_vote, do: "pre-", else: ""}vote to #{request_vote.candidate_id}", logger_metadata(data))
+    Logger.info("denying #{if request_vote.pre_vote, do: "pre-", else: ""}vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: false}))
 
     RPC.respond_vote(request_vote, false, data)
 
@@ -548,7 +589,7 @@ defmodule Craft.Consensus do
 
     Machine.update_role(data)
 
-    Logger.info("became candidate, initiating leadership transfer election", logger_metadata(data))
+    Logger.info("became candidate, initiating leadership transfer election", logger_metadata(data, trace: {:became, :candidate}))
 
     RPC.request_vote(data, leadership_transfer: true)
 
@@ -563,7 +604,7 @@ defmodule Craft.Consensus do
 
     Machine.update_role(data)
 
-    Logger.info("became candidate", logger_metadata(data))
+    Logger.info("became candidate", logger_metadata(data, trace: {:became, :candidate}))
 
     RPC.request_vote(data)
 
@@ -571,7 +612,7 @@ defmodule Craft.Consensus do
   end
 
   def candidate(:state_timeout, :election_failed, data) do
-    Logger.info("election failed, becoming lonely", logger_metadata(data))
+    Logger.info("election failed, becoming lonely", logger_metadata(data, trace: :election_failed))
 
     {:next_state, :lonely, data}
   end
@@ -588,7 +629,7 @@ defmodule Craft.Consensus do
 
   # refuse to vote for another candidate
   def candidate(:cast, %RequestVote{} = request_vote, data) do
-    Logger.info("denying #{(if request_vote.pre_vote, do: "pre-", else: "")}vote to #{request_vote.candidate_id}", logger_metadata(data))
+    Logger.info("denying #{(if request_vote.pre_vote, do: "pre-", else: "")}vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_received, granted?: false, pre_vote?: request_vote.pre_vote}))
 
     RPC.respond_vote(request_vote, false, data)
 
@@ -602,9 +643,9 @@ defmodule Craft.Consensus do
 
   def candidate(:cast, %RequestVote.Results{} = results, data) do
     if results.vote_granted do
-      Logger.info("vote granted by #{results.from}", logger_metadata(data))
+      Logger.info("vote granted by #{results.from}", logger_metadata(data, trace: {:vote_received, granted?: results.vote_granted}))
     else
-      Logger.info("vote denied by #{results.from}", logger_metadata(data))
+      Logger.info("vote denied by #{results.from}", logger_metadata(data, trace: {:vote_received, granted?: results.vote_granted}))
     end
 
     # keep the future-most lease timestamp
@@ -634,10 +675,11 @@ defmodule Craft.Consensus do
 
     case State.election_result(data) do
       :won ->
+        Logger.info("election won, becoming leader", logger_metadata(data, trace: :election_won))
         {:next_state, :leader, data}
 
       :lost ->
-        Logger.info("election lost, becoming lonely", logger_metadata(data))
+        Logger.info("election lost, becoming lonely", logger_metadata(data, trace: :election_lost))
         {:next_state, :lonely, data}
 
       :pending ->
@@ -722,14 +764,16 @@ defmodule Craft.Consensus do
         actions = [{{:timeout, :takeover}, 0, data.lease_expires_at} | actions]
         data = put_in(data.leader_state.waiting_for_lease, true)
 
+        Logger.info("became leader, waiting for lease", logger_metadata(data, trace: {:became, :leader}))
+
         {:keep_state, data, actions}
       else
-        Logger.info("became leader, immediately taking lease", logger_metadata(data))
+        Logger.info("became leader, immediately taking lease", logger_metadata(data, trace: {:became, :leader}))
 
         {:keep_state, data, actions}
       end
     else
-      Logger.info("became leader", logger_metadata(data))
+      Logger.info("became leader", logger_metadata(data, trace: {:became, :leader}))
 
       {:keep_state, data, actions}
     end
@@ -741,10 +785,12 @@ defmodule Craft.Consensus do
 
   def leader({:timeout, :check_quorum}, :check_quorum, data) do
     if data.leader_state.last_quorum_at < :erlang.monotonic_time(:millisecond) - @checkquorum_interval do
-      Logger.info("unable to make quorum, stepping down.", logger_metadata(data))
+      Logger.info("unable to make quorum, stepping down.", logger_metadata(data, trace: {:check_quorum, :failed}))
 
       {:next_state, :lonely, data}
     else
+      Logger.debug("check-quorum successful", logger_metadata(data, trace: {:check_quorum, :ok}))
+
       {:keep_state_and_data, [{{:timeout, :check_quorum}, @checkquorum_interval, :check_quorum}]}
     end
   end
@@ -754,15 +800,17 @@ defmodule Craft.Consensus do
     # our monotonic clock could be wrong, the user-provided clock source is the authority
       case GlobalTimestamp.time_until_lease_expires(data.global_clock, old_lease_expires_at) do
         {:ok, 0} ->
-          Logger.info("taking over lease", logger_metadata(data))
+          Logger.info("taking over lease", logger_metadata(data, trace: :lease_takeover))
 
           {:keep_state, put_in(data.leader_state.waiting_for_lease, false)}
 
         {:ok, wait_time} ->
+          Logger.debug("waiting #{wait_time}ms for lease", logger_metadata(data, trace: {:waiting_out_lease, wait_time}))
+
           {:keep_state_and_data, [{{:timeout, :takeover}, wait_time, old_lease_expires_at}]}
 
         error ->
-          Logger.warning("unable to acquire lease, global clock error: #{inspect error}, becoming follower", logger_metadata(data))
+          Logger.warning("unable to acquire lease, global clock error: #{inspect error}, becoming follower", logger_metadata(data, trace: :global_clock_failure))
 
           {:next_state, :lonely, data}
       end
@@ -770,7 +818,7 @@ defmodule Craft.Consensus do
 
   # ignore any messages from earlier terms
   def leader(:cast, %{term: term} = msg, %State{current_term: current_term} = data) when term < current_term do
-    Logger.info("ignoring message #{inspect msg} for earlier term #{term}", logger_metadata(data))
+    Logger.debug("ignoring message #{inspect msg} for earlier term #{term}", logger_metadata(data, trace: :ignored_earlier_term_message))
 
     :keep_state_and_data
   end
@@ -781,7 +829,7 @@ defmodule Craft.Consensus do
   def leader(:cast, %RequestVote{pre_vote: true} = request_vote, data) do
     vote_granted = State.vote_for?(data, request_vote)
 
-    Logger.info("#{if vote_granted, do: "granting", else: "denying"} pre-vote to #{request_vote.candidate_id}", logger_metadata(data))
+    Logger.info("#{if vote_granted, do: "granting", else: "denying"} pre-vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: vote_granted}))
 
     RPC.respond_vote(request_vote, vote_granted, data)
 
@@ -840,7 +888,7 @@ defmodule Craft.Consensus do
   end
 
   def leader(:cast, :step_down, data) do
-    Logger.info("stepping down", logger_metadata(data))
+    Logger.info("stepping down", logger_metadata(data, trace: :step_down))
 
     {:next_state, :lonely, data, []}
   end
@@ -892,7 +940,7 @@ defmodule Craft.Consensus do
         {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
 
       error ->
-        Logger.error("unable to determine global time for command, got #{inspect error}, becoming follower", logger_metadata(data))
+        Logger.error("unable to determine global time for command, got #{inspect error}, becoming follower", logger_metadata(data, trace: :global_clock_failure))
 
         {:next_state, :lonely, data, [{:reply, from, {:error, :not_leaseholder}}]}
     end
@@ -954,7 +1002,7 @@ defmodule Craft.Consensus do
   end
 
   def leader(type, msg, data) do
-    Logger.info("ignoring #{inspect type} message #{inspect msg}", logger_metadata(data))
+    Logger.debug("ignoring #{inspect type} message #{inspect msg}", logger_metadata(data))
 
     :keep_state_and_data
   end
@@ -968,7 +1016,7 @@ defmodule Craft.Consensus do
   end
 
   defp become_follower(%{term: term} = msg, data) do
-    Logger.info("received message #{inspect msg} from later term #{term}, becoming/remaining follower", logger_metadata(data))
+    Logger.info("received message #{inspect msg} from later term #{term}, becoming/remaining follower", logger_metadata(data, event: {:became, :follower}))
 
     {:next_state, :follower, State.set_current_term(data, term), [:postpone]}
   end
@@ -996,7 +1044,7 @@ defmodule Craft.Consensus do
             State.set_lease_expires_at(state, GlobalTimestamp.add(now, @leader_lease_period, :millisecond))
 
           error ->
-            Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state))
+            Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state, trace: :global_clock_failure))
 
             throw({:next_state, :lonely, state})
         end

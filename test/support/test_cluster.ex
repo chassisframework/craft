@@ -20,6 +20,9 @@ defmodule Craft.TestCluster do
     transfer_config(node)
     start_apps(node)
 
+    # only handle the nexus logs on the test node, otherwise we get dupes
+    :rpc.call(node, :logger, :remove_handler, [:nexus_handler])
+
     node
   end
 

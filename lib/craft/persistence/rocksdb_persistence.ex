@@ -8,6 +8,10 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
   alias Craft.Configuration
 
+  require Logger
+
+  import Craft.Tracing, only: [logger_metadata: 1]
+
   @log_column_family {~c"log", []}
   @metadata_column_family {~c"metadata", []}
 
@@ -126,7 +130,16 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
     :ok = :rocksdb.transaction_commit(transaction)
 
-    set_latest_index_and_term(state)
+    old_latest_index = state.latest_index
+    state = set_latest_index_and_term(state)
+
+    Logger.debug(fn ->
+      num_entries = old_latest_index - state.latest_index
+
+      {"rewound #{num_entries} log entries", logger_metadata(event: {:rewound_log, num_entries})}
+    end)
+
+    state
   end
   def rewind(%__MODULE__{} = state, _index), do: state
 

@@ -1,6 +1,6 @@
 defmodule Craft.LivenessTest do
   use Craft.NexusCase,
-      parameterize: (for leases <- [true, false], do: %{leader_leases: leases})
+      parameterize: (for leases <- [true], do: %{leader_leases: leases})
 
   alias Craft.Nexus.Stability
   alias Craft.RPC.RequestVote

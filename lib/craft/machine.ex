@@ -63,18 +63,6 @@ defmodule Craft.Machine do
     ]
   end
 
-  if Mix.env() == :test do
-    defmacrop notify_nexus(state, message, conditional) do
-      quote do
-        if unquote(conditional) do
-          Craft.Nexus.send_event(unquote(state).nexus_pid, {:machine, unquote(message)})
-        end
-      end
-    end
-  else
-    defmacrop notify_nexus(_state, _message, _conditional), do: (quote do :noop end)
-  end
-
   def start_link(args) do
     GenServer.start_link(__MODULE__, args, name: via(args.name, __MODULE__))
   end
@@ -169,6 +157,8 @@ defmodule Craft.Machine do
 
   @impl true
   def init(args) do
+    Logger.metadata(name: args.name, node: node(), nexus: args[:nexus_pid])
+
     if nexus_pid = args[:nexus_pid] do
       remote_group_leader = :rpc.call(node(nexus_pid), Process, :whereis, [:init])
       :logger.update_process_metadata(%{gl: remote_group_leader})
@@ -210,7 +200,7 @@ defmodule Craft.Machine do
 
   @impl true
   def handle_cast({:quorum_reached, new_commit_index, log, should_snapshot?, lease_expires_at}, state) do
-    notify_nexus(state, {:lease_taken, node(), lease_expires_at}, !!lease_expires_at)
+    # notify_nexus(state, {:machine, {:lease_taken, node()}, lease_expires_at}, !!lease_expires_at)
 
     state =
       if state.role == :leader do
