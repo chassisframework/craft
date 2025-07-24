@@ -5,7 +5,7 @@ ifeq ($(strip $(ERL_INCLUDE_PATH)),)
 endif
 
 NIF_SRC := c_src/clock_monotonic.c
-NIF_SO := _build/$(MIX_ENV)/lib/craft/priv/clock_monotonic.so
+NIF_SO := $(BUILD_DIR)/priv/clock_monotonic.so
 CFLAGS := -fPIC -shared -dynamiclib -undefined dynamic_lookup -I $(ERL_INCLUDE_PATH)
 
 ${NIF_SO}:

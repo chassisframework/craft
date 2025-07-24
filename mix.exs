@@ -1,6 +1,8 @@
 defmodule Mix.Tasks.Compile.Nif do
   def run(_args) do
-    case System.cmd("make", [], env: [{"MIX_ENV", to_string(Mix.env())}], stderr_to_stdout: true) do
+    app = Mix.Project.config()
+    build_dir = Mix.Project.app_path(app)
+    case System.cmd("make", [], env: [{"BUILD_DIR", build_dir}], stderr_to_stdout: true) do
       {_result, 0} ->
         :ok
 

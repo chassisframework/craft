@@ -78,6 +78,11 @@ defmodule Craft.Application do
   else
     defp set_nexus_logger, do: :noop
     defp silence_sasl_logger, do: :noop
-    defp ensure_disterl!, do: raise("Craft requires the node to be in distributed mode.")
+
+    defp ensure_disterl! do
+      if !Application.get_env(:craft, :allow_local?, false) do
+        raise("Craft requires the node to be in distributed mode. use `config :craft, allow_local?: true` to override")
+      end
+    end
   end
 end

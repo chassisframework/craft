@@ -9,9 +9,10 @@ defmodule Craft.GlobalTimestamp.ClockBound do
   alias Craft.GlobalTimestamp
 
   @on_load :load_nif
+  @default_mem_path "/var/run/clockbound/shm0"
 
   # all this silly indirection is just to make testing easier
-  def now(read_fun \\ fn -> Application.get_env(:craft, :clock_bound_shm_path) |> File.read() end, retries \\ 1_000) do
+  def now(read_fun \\ fn -> File.read(Application.get_env(:craft, :clock_bound_shm_path, @default_mem_path)) end, retries \\ 1_000) do
     with {:ok, binary} <- read_fun.(),
          {:retry, reason} <- do_now(binary) do
       if retries > 0 do

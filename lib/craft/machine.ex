@@ -27,7 +27,7 @@ defmodule Craft.Machine do
   @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
   @callback handle_query(Craft.query(), private()) :: Craft.reply()
   @callback handle_role_change(role(), private()) :: private()
-  @callback handle_info({:user_message, term()}, private()) :: private()
+  @callback handle_info(term(), private()) :: private()
   @optional_callbacks handle_role_change: 2, handle_info: 2
 
   defmodule MutableMachine do
