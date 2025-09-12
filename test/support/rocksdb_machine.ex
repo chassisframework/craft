@@ -80,21 +80,19 @@ defmodule Craft.RocksDBMachine do
   end
 
   @impl true
-  def handle_query({:get, k}, state) do
-    case :rocksdb.get(state.db, encode(k), []) do
-      {:ok, value} ->
-        {:ok, decode(value)}
+  def handle_query({:get, k}, _from, state) do
+    resp =
+      case :rocksdb.get(state.db, encode(k), []) do
+        {:ok, value} -> {:ok, decode(value)}
+        :not_found -> {:error, :not_found}
+        error -> error
+      end
 
-      :not_found ->
-        {:error, :not_found}
-
-      error ->
-        error
-    end
+    {:reply, resp}
   end
 
-  def handle_query(_, state) do
-    {{:error, :unknown_query}, state}
+  def handle_query(_, _from, state) do
+    {:reply, {{:error, :unknown_query}, state}}
   end
 
   @impl true

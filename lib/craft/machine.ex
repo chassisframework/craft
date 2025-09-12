@@ -25,7 +25,7 @@ defmodule Craft.Machine do
 
   @callback init(Craft.group_name()) :: {:ok, private()}
   @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
-  @callback handle_query(Craft.query(), private()) :: Craft.reply()
+  @callback handle_query(Craft.query(), from :: {pid(), {pid(), reference()}}, private()) :: {:reply, Craft.reply()} | :noreply
   @callback handle_role_change(role(), private()) :: private()
   @callback handle_info({:user_message, term()}, private()) :: private()
   @optional_callbacks handle_role_change: 2, handle_info: 2
@@ -60,7 +60,7 @@ defmodule Craft.Machine do
       :global_clock,
       :lease_expires_at,
       last_applied: 0,
-      client_query_results: [],
+      client_query_results: %{},
       client_commands: %{}
     ]
   end
@@ -136,6 +136,11 @@ defmodule Craft.Machine do
     |> GenServer.call(request, timeout)
   end
 
+  @doc "Allows responding to a query from a different process, like GenServer.reply"
+  def reply({pid, query_from}, reply) do
+    GenServer.call(pid, {{:query_reply, reply}, query_from})
+  end
+
   @impl true
   def init(args) do
     Logger.metadata(name: args.name, node: node(), nexus: args[:nexus_pid])
@@ -176,7 +181,7 @@ defmodule Craft.Machine do
         state.private
       end
 
-    {:noreply, %{state | role: new_role, private: private, client_commands: %{}, client_query_results: []}}
+    {:noreply, %{state | role: new_role, private: private, client_commands: %{}, client_query_results: %{}}}
   end
 
   @impl true
@@ -193,12 +198,13 @@ defmodule Craft.Machine do
       if state.role == :leader do
         # read-index based queries
         for {from, result} <- state.client_query_results do
-          Logger.debug("responding to client query", logger_metadata(trace: {:sending_client_response, %{from: from, result: result}}))
-
-          GenServer.reply(from, result)
+          with {:resolved, reply} <- result do
+            Logger.debug("responding to client query", logger_metadata(trace: {:sending_client_response, %{from: from, result: reply}}))
+            GenServer.reply(from, reply)
+          end
         end
 
-        state = %{state | client_query_results: [], lease_expires_at: lease_expires_at}
+        state = %{state | client_query_results: %{}, lease_expires_at: lease_expires_at}
 
         if lease_expires_at do
           MemberCache.update_lease_holder(state)
@@ -296,7 +302,10 @@ defmodule Craft.Machine do
          {:ok, lease_time} when lease_time > 0 <- GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) do
       Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
-      {:reply, state.module.handle_query(query, state.private), state}
+      case state.module.handle_query(query, {self(), from}, state.private) do
+        {:reply, reply} -> {:reply, reply, state}
+        :noreply -> {:noreply, state}
+      end
     else
       _ ->
       {:reply, {:error, :not_leaseholder}, state}
@@ -306,9 +315,13 @@ defmodule Craft.Machine do
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader} = state) do
     Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :quorum_read, from, query}))
 
-    result = state.module.handle_query(query, state.private)
+    client_query_results = 
+      case state.module.handle_query(query, {self(), from}, state.private) do
+        {:reply, reply} -> Map.put(state.client_query_results, from, {:resolved, reply})
+        :noreply -> Map.put(state.client_query_results, from, :pending)
+      end
 
-    {:noreply, %{state | client_query_results: [{from, result} | state.client_query_results]}}
+    {:noreply, %{state | client_query_results: client_query_results}}
   end
 
   # only the leader can process linearizable queries
@@ -322,7 +335,10 @@ defmodule Craft.Machine do
     if state.role == :leader do
       Logger.debug("executing query", logger_metadata(trace: {:query, :leader_eventual, :quorum_read, from, query}))
 
-      {:reply, state.module.handle_query(query, state.private), state}
+      case state.module.handle_query(query, {self(), from}, state.private) do
+        {:reply, reply} -> {:reply, reply, state}
+        :noreply -> {:norely, state}
+      end
     else
       case MemberCache.get(state.name) do
         {:ok, group_status} ->
@@ -337,7 +353,19 @@ defmodule Craft.Machine do
   def handle_call({:query, :eventual, query}, from, state) do
     Logger.debug("executing query", logger_metadata(trace: {:query, :eventual, :quorum_read, from, query}))
 
-    {:reply, state.module.handle_query(query, state.private), state}
+    case state.module.handle_query(query, {self(), from}, state.private) do
+      {:reply, reply} -> {:reply, reply, state}
+      :noreply -> {:norely, state}
+    end
+  end
+
+  def handle_call({{:query_reply, reply}, query_from}, _from, state) do
+    if Map.get(state.client_query_results, query_from) == :pending do
+      {:reply, :ok, put_in(state, [:client_query_results, query_from], {:resolved, reply})}
+    else
+      GenServer.reply(query_from, reply)
+      {:reply, :ok, state}
+    end
   end
 
   def handle_call({:command, command}, from, state) do
@@ -437,11 +465,12 @@ defmodule Craft.Machine do
   end
 
   @impl true
-  def handle_info({:user_message, msg}, state) do
+  def handle_info(msg, state) do
     private =
       if function_exported?(state.module, :handle_info, 2) do
         state.module.handle_info(msg, state.private)
       else
+        Logger.error("Message #{inspect(msg)} received but no handle_info defined in #{inspect(state.module)}")
         state.private
       end
 
