@@ -163,11 +163,11 @@ defmodule Craft do
   @doc """
   Sends a message to the local instance of the user's state machine.
 
-  Receivable by the `handle_info/1` callback.
+  Receivable by the `handle_info/2` callback.
   """
   def send(name, message) do
     if pid = Craft.Application.lookup(name, Craft.Machine) do
-      Kernel.send(pid, {:user_message, message})
+      Kernel.send(pid, message)
 
       :ok
     else

@@ -121,12 +121,15 @@ defmodule Craft.LinearizabilityTest do
         |> String.trim("<")
         |> String.trim(">")
 
-      if :rand.uniform(100) > 50 do
-        command = {:put, :a, "#{value}_#{i}"}
-        {{:write, command}, Craft.command(command, ctx.name)}
-      else
-        query = {:get, :a}
-        {{:read, query}, Craft.query(query, ctx.name)}
+      case :rand.uniform(100) do
+        val when val > 50 ->
+          command = {:put, :a, "#{value}_#{i}"}
+          {{:write, command}, Craft.command(command, ctx.name)}
+        val when val > 25  ->
+          query = {:get, :a}
+          {{:read, query}, Craft.query(query, ctx.name)}
+        _val ->
+          {{:read, {:get_parallel, :a, send_self: true}}, Craft.query({:get_parallel, :a, []}, ctx.name)}
       end
     end
   end

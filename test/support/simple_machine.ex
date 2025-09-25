@@ -13,6 +13,10 @@ defmodule Craft.SimpleMachine do
     Craft.query({:get, k}, name, opts)
   end
 
+  def get_parallel(name, k, opts \\ []) do
+    Craft.query({:get_parallel, k, []}, name, opts)
+  end
+
   @impl TestModel
   def init, do: init(nil)
 
@@ -25,7 +29,16 @@ defmodule Craft.SimpleMachine do
   def write(command, state), do: handle_command(command, nil, state)
 
   @impl TestModel
-  def read(query, state), do: handle_query(query, state)
+  def read(query, state) do
+    id = {self(), make_ref()}
+    case handle_query(query, id, state) do
+      {:reply, resp} -> resp
+      :noreply ->
+        receive do
+          {:reply, resp} -> resp
+        end
+    end
+  end
 
   @impl true
   def handle_command({:put, k, v}, _log_index, state) do
@@ -33,8 +46,23 @@ defmodule Craft.SimpleMachine do
   end
 
   @impl true
-  def handle_query({:get, k}, state) do
-    {:ok, Map.get(state, k)}
+  def handle_query({:get, k}, _from, state) do
+    {:reply, {:ok, Map.get(state, k)}}
+  end
+
+  @impl true
+  def handle_query({:get_parallel, k, opts}, from, state) do
+    pid = self()
+    spawn_link(fn ->
+      resp = {:ok, Map.get(state, k)}
+      if Keyword.get(opts, :send_self, false) do
+        send(pid, {:reply, resp})
+      else
+        Craft.Machine.reply(from, resp)
+      end
+    end)
+
+    :noreply
   end
 
   @impl true

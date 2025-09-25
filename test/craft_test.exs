@@ -33,6 +33,7 @@ defmodule CraftTest do
       %{leader: leader} = wait_until(nexus, {Stability, :all})
       # assert leader doesn't need to contact other nodes in eventual mode
       assert {:ok, nil} = Craft.query({:get, :a}, name, consistency: {:eventual, :leader})
+      assert {:ok, nil} = Craft.query({:get_parallel, :a, []}, name, consistency: {:eventual, :leader})
 
       # assert returns out of date value on isolated node in :eventual mode
       isolated_node = Enum.random(nodes -- [leader])
@@ -46,6 +47,7 @@ defmodule CraftTest do
       assert {:ok, 123} = Craft.query({:get, :a}, name)
 
       assert {:ok, nil} = Craft.query({:get, :a}, name, consistency: {:eventual, {:node, isolated_node}})
+      assert {:ok, nil} = Craft.query({:get_parallel, :a, []}, name, consistency: {:eventual, {:node, isolated_node}})
 
       # assert successful linearizable query when network returns
       nemesis(nexus, fn _ -> :forward end)
