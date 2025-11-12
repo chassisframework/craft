@@ -34,4 +34,22 @@ defmodule InheritExplicitSandboxTest do
         assert {:ok, "b"} = Craft.query({:get_parallel, "a"}, "abc")
     end
   end
+
+  test "inherits task caller sandbox", ctx do
+    Craft.Sandbox.join(ctx.name)
+
+    assert :ok = Craft.start_group("abc", [], Craft.SandboxTestMachine)
+
+    me = self()
+    Task.Supervisor.async(Craft.TestTaskSupervisor, fn ->
+        assert :ok = Craft.command({:put, "a", "b"}, "abc")
+        send(me, :go)
+    end)
+
+    receive do
+      :go ->
+        assert {:ok, "b"} = Craft.query({:get, "a"}, "abc")
+        assert {:ok, "b"} = Craft.query({:get_parallel, "a"}, "abc")
+    end
+  end
 end

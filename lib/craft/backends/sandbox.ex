@@ -27,6 +27,10 @@ defmodule Craft.Sandbox do
 
   Inheritance can be enabled by setting the `:mode` to `:inherit`:
     `config :craft, :backend, {Craft.Sandbox, mode: :inherit, lookup: {m, f}}`
+
+    Inheritance allows the test process to inherit the sandbox of 
+      1) any process defined in the $callers entry of its process dictionary (i.e. the process that calls TaskSupervisor.async) or 
+      2) the ancestors that spawned the process
   """
   use GenServer
 
@@ -37,11 +41,8 @@ defmodule Craft.Sandbox do
   # test pid -> sandbox name
   opts =
     case Application.compile_env(:craft, :backend) do
-      {__MODULE__, opts} ->
-        opts
-
-      _ ->
-        []
+      {__MODULE__, opts} -> opts
+      _ -> []
     end
 
   if opts[:mode] == :shared do
@@ -65,32 +66,50 @@ defmodule Craft.Sandbox do
   end
 
   if opts[:mode] == :inherit do
-    defp find_sandbox(pid) do
-      case do_find_sandbox(pid) do
-        {:ok, name} ->
-          {:ok, name}
+    defp find_sandbox() do
+      self()
+      |> do_find_sandbox()
+      |> find_sandbox_by_callers()
+      |> find_sandbox_by_parents()
+    end
 
-        _ ->
-          # if the ancestor is a sandbox, return it
-          # this happens when the machine spawns a process
-          {:dictionary, dictionary} = Process.info(pid, :dictionary)
-          if name = dictionary[:__CRAFT_SANDBOX__] do
-            {:ok, name}
-          else
-            case Process.info(pid, :parent) do
-              {:parent, parent} when is_pid(parent) ->
-                find_sandbox(parent)
+    defp find_sandbox_by_callers({:ok, name}), do: {:ok, name}
 
-              _ ->
-                :error
-            end
-          end
+    defp find_sandbox_by_callers(:error) do
+      caller_pids = Process.get(:"$callers", [])
+
+      Enum.reduce_while(caller_pids, :error, fn pid, _acc ->
+        case do_find_sandbox(pid) do
+          {:ok, name} -> {:halt, {:ok, name}}
+          :error -> {:cont, :error}
+        end
+      end)
+    end
+
+    defp find_sandbox_by_parents({:ok, name}), do: {:ok, name}
+
+    defp find_sandbox_by_parents(:error),
+      do: find_sandbox_on_next_parent(Process.info(self(), :parent))
+
+    defp find_sandbox_on_next_parent({:parent, pid}) when is_pid(pid) do
+      # if the ancestor is a sandbox, return it
+      # this happens when the machine spawns a process
+      {:dictionary, dictionary} = Process.info(pid, :dictionary)
+
+      if name = dictionary[:__CRAFT_SANDBOX__] do
+        {:ok, name}
+      else
+        case do_find_sandbox(pid) do
+          {:ok, name} -> {:ok, name}
+          :error -> find_sandbox_on_next_parent(Process.info(pid, :parent))
+        end
       end
     end
-  else
-    defp find_sandbox(pid), do: do_find_sandbox(pid)
-  end
 
+    defp find_sandbox_on_next_parent(_no_parent), do: :error
+  else
+    defp find_sandbox(), do: do_find_sandbox(self())
+  end
 
   def init do
     with {__MODULE__, opts} <- Application.get_env(:craft, :backend),
@@ -143,15 +162,15 @@ defmodule Craft.Sandbox do
 
   @doc false
   def send(name, message) do
-    GenServer.call(find!(), {:user_message, name, message})
+    Kernel.send(find!(), {:user_message, name, message})
   end
 
-  def reply({:direct, {pid, _ref} = query_from}, reply) do
-    if find!() != find!(pid) do
+  def reply({:direct, {_pid, _ref} = reply_ref, sandbox_pid}, reply) do
+    if find!() != sandbox_pid do
       raise "sandbox boundary violation"
     end
 
-    GenServer.reply(query_from, reply)
+    GenServer.reply(reply_ref, reply)
   end
 
   def reply({:quorum, _query_time, _machine_pid, _query_from}, _reply), do: :not_implemented
@@ -199,19 +218,23 @@ defmodule Craft.Sandbox do
   @doc false
   def state(_name, _node), do: :not_implemented
 
-  defp find!(pid \\ self()) do
+  defp find!() do
     # if the sandbox itself is the caller, it's its own sandbox
-    if pid == self() && Process.get(:__CRAFT_SANDBOX__) do
+    if Process.get(:__CRAFT_SANDBOX__) do
       self()
     else
-      with {:ok, name} <- find_sandbox(pid),
-           pid when is_pid(pid) <- lookup(name, Craft.Sandbox) do
-        pid
+      with {:ok, name} <- find_sandbox(),
+           sandbox_pid when is_pid(sandbox_pid) <- lookup(name, Craft.Sandbox) do
+        sandbox_pid
       else
         _ ->
-          raise "no sandbox configured for pid #{inspect self()}"
+          raise "no sandbox configured for pid #{inspect(self())}"
       end
     end
+  end
+
+  def current_index(name, group) do
+    GenServer.call(via(name, __MODULE__), {:current_index, group})
   end
 
   @doc false
@@ -232,6 +255,14 @@ defmodule Craft.Sandbox do
     Process.put(:__CRAFT_SANDBOX__, name)
 
     {:ok, %{}}
+  end
+
+  @impl GenServer
+  def handle_call({:current_index, group}, _from, state) do
+    case state[group] do
+      nil -> {:reply, {:error, :group_not_started}, state}
+      machine_state -> {:reply, {:ok, machine_state.index}, state}
+    end
   end
 
   @impl GenServer
@@ -275,9 +306,11 @@ defmodule Craft.Sandbox do
 
   def handle_call({:command, name, command}, _from, state) do
     if machine_state = state[name] do
-      {reply, private} = machine_state.module.handle_command(command, machine_state.index, machine_state.private)
+      {reply, private} =
+        machine_state.module.handle_command(command, machine_state.index, machine_state.private)
 
-      {:reply, reply, Map.put(state, name, %{machine_state | private: private, index: machine_state.index+1})}
+      {:reply, reply,
+       Map.put(state, name, %{machine_state | private: private, index: machine_state.index + 1})}
     else
       {:reply, {:error, :unknown_group}, state}
     end
@@ -285,7 +318,11 @@ defmodule Craft.Sandbox do
 
   def handle_call({:query, name, query}, from, state) do
     if machine_state = state[name] do
-      case machine_state.module.handle_query(query, {:direct, from}, machine_state.private) do
+      case machine_state.module.handle_query(
+             query,
+             {:direct, from, self()},
+             machine_state.private
+           ) do
         {:reply, response} ->
           {:reply, response, state}
 
@@ -294,16 +331,6 @@ defmodule Craft.Sandbox do
       end
     else
       {:reply, {:error, :unknown_group}, state}
-    end
-  end
-
-  def handle_call({:user_message, name, message}, _from, state) do
-    if machine_state = state[name] do
-      private = machine_state.machine.handle_info(message, machine_state.private)
-
-      {:noreply, Map.put(state, name, %{machine_state | private: private})}
-    else
-      {:noreply, state}
     end
   end
 
@@ -331,6 +358,17 @@ defmodule Craft.Sandbox do
     Configuration.restore_from_backup(path)
 
     {:reply, :ok}
+  end
+
+  @impl GenServer
+  def handle_info({:user_message, name, message}, state) do
+    if machine_state = state[name] do
+      private = machine_state.module.handle_info(message, machine_state.private)
+
+      {:noreply, Map.put(state, name, %{machine_state | private: private})}
+    else
+      {:noreply, state}
+    end
   end
 
   defp init_machine(name, machine, state) do
@@ -378,10 +416,8 @@ defmodule Craft.Sandbox do
     end
 
     defmodule State do
-      defstruct [
-        name_to_pids: %{},
-        pid_to_name: %{}
-      ]
+      defstruct name_to_pids: %{},
+                pid_to_name: %{}
     end
 
     def init(_) do
@@ -404,9 +440,10 @@ defmodule Craft.Sandbox do
           end
 
         state =
-          %{state |
-            name_to_pids: Map.put(state.name_to_pids, name, pids),
-            pid_to_name: Map.put(state.pid_to_name, pid, name)
+          %{
+            state
+            | name_to_pids: Map.put(state.name_to_pids, name, pids),
+              pid_to_name: Map.put(state.pid_to_name, pid, name)
           }
 
         Process.monitor(pid)
