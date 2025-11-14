@@ -99,12 +99,19 @@ defmodule Craft do
     1. holds the lease, and
     2. the user's machine is 'caught up' after an election
 
-  This function is intended to extend craft's linearizabiliy guarantees to processes outside of the user's state machine.
+  This function is intended to extend craft's linearizabiliy guarantees to processes outside of the user's state machine when used with leader_ready?/1.
   """
   def holding_lease?(name), do: backend().holding_lease?(name)
 
   @doc "See holding_lease?/1, called from within a user's machine callback"
   def holding_lease?(), do: backend().holding_lease?()
+
+  @doc """
+  Indicates if the user's state machine on the leader has caught up after an election.
+
+  This function is intended to extend craft's linearizabiliy guarantees to processes outside of the user's state machine when used with holding_lease?/1.
+  """
+  def leader_ready?(name), do: backend().leader_ready?(name)
 
   @doc "Lists the groups known to this node, with cached information (members, lease holder, etc..)"
   def known_groups(), do: backend().known_groups()

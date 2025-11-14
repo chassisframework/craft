@@ -154,6 +154,7 @@ defmodule Craft.Raft do
   defdelegate stop_member(name), to: Craft.MemberSupervisor
   defdelegate discover(name, nodes), to: MemberCache
   defdelegate holding_lease?(name), to: MemberCache
+  defdelegate leader_ready?(name), to: MemberCache
   defdelegate holding_lease?(), to: Machine
   defdelegate known_groups(), to: MemberCache, as: :all
   defdelegate cached_info(group_name), to: MemberCache, as: :get

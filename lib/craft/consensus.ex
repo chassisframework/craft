@@ -766,6 +766,7 @@ defmodule Craft.Consensus do
     data = State.become_leader(data)
 
     MemberCache.update(data)
+    MemberCache.set_leader_ready(data.name, false)
 
     #
     # when the cluster starts up, each node is explicitly given the same configuration to

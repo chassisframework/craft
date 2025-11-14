@@ -194,6 +194,8 @@ defmodule Craft.Sandbox do
   def holding_lease?(_name), do: true
   @doc false
   def holding_lease?(), do: true
+  @doc false
+  def leader_ready?(_name), do: true
 
   @doc false
   def known_groups(), do: :not_implemented

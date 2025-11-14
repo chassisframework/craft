@@ -254,6 +254,7 @@ defmodule Craft.Machine do
       {"quorum reached", logger_metadata(trace: {:quorum_reached, metadata})}
     end)
 
+    # answer client queries
     state =
       if state.role == :leader do
         # read-index based queries
@@ -269,28 +270,12 @@ defmodule Craft.Machine do
           MemberCache.update_lease_holder(state)
         end
 
-        case state.waiting_for_first_commit do
-          {:waiting, index} when new_commit_index >= index ->
-            Logger.debug("saw first commit, ready for queries", logger_metadata(trace: :ready_for_queries))
-
-            private =
-              if function_exported?(state.module, :handle_role_change, 2) do
-                state.module.handle_role_change(:leader, state.private)
-              else
-                state.private
-              end
-
-            MemberCache.set_leader_ready(state)
-
-            %{state | waiting_for_first_commit: false, private: private}
-
-          _ ->
-            state
-        end
+        state
       else
         state
       end
 
+    # apply machine commands
     state =
       Enum.reduce(state.last_applied+1..new_commit_index//1, state, fn index, state ->
         case Persistence.fetch(log, index) do
@@ -321,6 +306,31 @@ defmodule Craft.Machine do
             reply_to_command(%{state | private: private}, index, reply)
         end
       end)
+
+    # update leader-readiness if user's state machine has caught up post-election.
+    state =
+      if state.role == :leader do
+        case state.waiting_for_first_commit do
+          {:waiting, index} when new_commit_index >= index ->
+            Logger.debug("saw first commit, ready for queries", logger_metadata(trace: :ready_for_queries))
+
+            private =
+              if function_exported?(state.module, :handle_role_change, 2) do
+                state.module.handle_role_change(:leader, state.private)
+              else
+                state.private
+              end
+
+            MemberCache.set_leader_ready(state.name, true)
+
+            %{state | waiting_for_first_commit: false, private: private}
+
+          _ ->
+            state
+        end
+      else
+        state
+      end
 
     #
     # right now, snapshotting is a synchronous process, later we should allow for async snapshots at

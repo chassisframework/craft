@@ -10,7 +10,6 @@ defmodule Craft.MemberCache do
   alias Craft.Machine.State, as: MachineState
   alias Craft.Persistence
 
-  # :leader_ready indicates if the leader's machine has committed its term's section 5.4.2 entry (info only available on the leader)
   defmodule GroupStatus do
     @moduledoc false
     defstruct [:group_name, :lease_holder, :leader, :leader_ready, :members, :commit_index, :current_term]
@@ -38,14 +37,19 @@ defmodule Craft.MemberCache do
   @doc false
   def holding_lease?(group_name) do
     with {lease_holder, global_clock, lease_expires_at} when lease_holder == node() <- :ets.lookup_element(__MODULE__, group_name, index(:lease_holder)),
-         {:ok, time} when time > 0 <- GlobalTimestamp.time_until_lease_expires(global_clock, lease_expires_at),
-         true <- :ets.lookup_element(__MODULE__, group_name, index(:leader_ready)) do
+         {:ok, time} when time > 0 <- GlobalTimestamp.time_until_lease_expires(global_clock, lease_expires_at) do
       true
 
     else
       _ ->
         false
     end
+  end
+
+  # indicates if the leader's machine has committed its term's section 5.4.2 entry (info only available on the leader)
+  @doc false
+  def leader_ready?(group_name) do
+    :ets.lookup_element(__MODULE__, group_name, index(:leader)) == node() and :ets.lookup_element(__MODULE__, group_name, index(:leader_ready))
   end
 
   @doc false
@@ -108,8 +112,8 @@ defmodule Craft.MemberCache do
     :ets.update_element(__MODULE__, state.name, {index(:lease_holder), {node(), state.global_clock, state.lease_expires_at}})
   end
 
-  def set_leader_ready(%MachineState{} = state) do
-    :ets.update_element(__MODULE__, state.name, {index(:leader_ready), true})
+  def set_leader_ready(group_name, leader_ready) do
+    :ets.update_element(__MODULE__, group_name, {index(:leader_ready), leader_ready})
   end
 
   @doc false
