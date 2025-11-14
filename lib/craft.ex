@@ -94,10 +94,16 @@ defmodule Craft do
   @doc "Initializes the MemberCache for the group with the given nodes"
   def discover(name, nodes), do: backend().discover(name, nodes)
 
-  @doc "Indicates if this node is holding the lease for the specified group name."
+  @doc """
+  Indicates, for the given group, if this node:
+    1. holds the lease, and
+    2. the user's machine is 'caught up' after an election
+
+  This function is intended to extend craft's linearizabiliy guarantees to processes outside of the user's state machine.
+  """
   def holding_lease?(name), do: backend().holding_lease?(name)
 
-  @doc "Indicates if this node is holding the lease, called from within a user's machine callback"
+  @doc "See holding_lease?/1, called from within a user's machine callback"
   def holding_lease?(), do: backend().holding_lease?()
 
   @doc "Lists the groups known to this node, with cached information (members, lease holder, etc..)"

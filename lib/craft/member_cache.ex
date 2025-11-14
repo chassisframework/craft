@@ -10,11 +10,12 @@ defmodule Craft.MemberCache do
   alias Craft.Machine.State, as: MachineState
   alias Craft.Persistence
 
+  # :leader_ready indicates if the leader's machine has committed its term's section 5.4.2 entry (info only available on the leader)
   defmodule GroupStatus do
     @moduledoc false
-    defstruct [:group_name, :lease_holder, :leader, :members, :commit_index, :current_term]
+    defstruct [:group_name, :lease_holder, :leader, :leader_ready, :members, :commit_index, :current_term]
   end
-  Record.defrecord(:group_status, [:lease_holder, :leader, :members, :commit_index, :current_term])
+  Record.defrecord(:group_status, [:lease_holder, :leader, :leader_ready, :members, :commit_index, :current_term])
   defmacrop index(field), do: (quote do group_status(unquote(field)) + 1 end)
 
   @doc false
@@ -37,7 +38,8 @@ defmodule Craft.MemberCache do
   @doc false
   def holding_lease?(group_name) do
     with {lease_holder, global_clock, lease_expires_at} when lease_holder == node() <- :ets.lookup_element(__MODULE__, group_name, index(:lease_holder)),
-         {:ok, time} when time > 0 <- GlobalTimestamp.time_until_lease_expires(global_clock, lease_expires_at) do
+         {:ok, time} when time > 0 <- GlobalTimestamp.time_until_lease_expires(global_clock, lease_expires_at),
+         true <- :ets.lookup_element(__MODULE__, group_name, index(:leader_ready)) do
       true
 
     else
@@ -104,6 +106,10 @@ defmodule Craft.MemberCache do
   @doc false
   def update_lease_holder(%MachineState{} = state) do
     :ets.update_element(__MODULE__, state.name, {index(:lease_holder), {node(), state.global_clock, state.lease_expires_at}})
+  end
+
+  def set_leader_ready(%MachineState{} = state) do
+    :ets.update_element(__MODULE__, state.name, {index(:leader_ready), true})
   end
 
   @doc false
@@ -198,6 +204,7 @@ defmodule Craft.MemberCache do
       group_name: elem(record, 0),
       members: group_status(record, :members),
       leader: group_status(record, :leader),
+      leader_ready: group_status(record, :leader_ready),
       lease_holder: group_status(record, :lease_holder),
       commit_index: group_status(record, :commit_index),
       current_term: group_status(record, :current_term)

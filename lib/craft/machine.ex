@@ -215,8 +215,9 @@ defmodule Craft.Machine do
       GenServer.reply(from, response)
     end
 
+    # for a new leader, handle_role_change/2 is called from the :quorum_reached handler when the first section 5.4.2 commit is observed
     private =
-      if function_exported?(state.module, :handle_role_change, 2) do
+      if new_role != :leader and function_exported?(state.module, :handle_role_change, 2) do
         state.module.handle_role_change(new_role, state.private)
       else
         state.private
@@ -272,7 +273,16 @@ defmodule Craft.Machine do
           {:waiting, index} when new_commit_index >= index ->
             Logger.debug("saw first commit, ready for queries", logger_metadata(trace: :ready_for_queries))
 
-            %{state | waiting_for_first_commit: false}
+            private =
+              if function_exported?(state.module, :handle_role_change, 2) do
+                state.module.handle_role_change(:leader, state.private)
+              else
+                state.private
+              end
+
+            MemberCache.set_leader_ready(state)
+
+            %{state | waiting_for_first_commit: false, private: private}
 
           _ ->
             state
