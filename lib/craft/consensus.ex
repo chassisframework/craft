@@ -41,35 +41,20 @@ defmodule Craft.Consensus do
 
   @behaviour :gen_statem
 
-  @heartbeat_interval 100 # ms
-
-  # max time in the past within which leader must have a successful quorum, or it'll step down
-  @checkquorum_interval @heartbeat_interval * 10
-
-  @lonely_timeout @heartbeat_interval + 1_000
-
-  # setting the leader lease length to something a bit less than the lonely timeout ensures that the new leader
-  # can pick up the lease immediately after it's elected. this is probably what you want, it increses availability
-  # in split-brain scenarios (this is what TiKV does).
-  #
-  # you don't have to do this, you're free to set the value however you like, the new leader will just wait out the old lease.
-  @leader_lease_period @lonely_timeout - 200
-
-  # amount of time to wait for votes before concluding that the election has failed
-  @election_timeout 1500
-
-  # jitter for lonely election initiation
-  @election_timeout_jitter 1500
+  defp heartbeat_interval, do: Application.get_env(:craft, :heartbeat_interval, 100)
+  defp checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 1000)
+  defp lonely_timeout, do: Application.get_env(:craft, :lonely_timeout, 1000)
+  defp leader_lease_period, do: Application.get_env(:craft, :leader_lease_period, 800)
+  defp election_timeout, do: Application.get_env(:craft, :election_timeout, 1500)
+  defp election_timeout_jitter, do: Application.get_env(:craft, :election_timeout_jitter, 1500)
+  defp leadership_transfer_timeout, do: Application.get_env(:craft, :leadership_transfer_timeout, 3000)
 
   if Mix.env == :test do
     # min floor prevents some flake in election tests
-    defp lonely_election_timeout(), do: 100 + :rand.uniform(@election_timeout_jitter)
+    defp lonely_election_timeout(), do: 100 + :rand.uniform(election_timeout_jitter())
   else
-    defp lonely_election_timeout(), do: :rand.uniform(@election_timeout_jitter)
+    defp lonely_election_timeout(), do: :rand.uniform(election_timeout_jitter())
   end
-
-  # amount of time to wait for new leader to take over before concluding that leadership transfer has failed
-  @leadership_transfer_timeout 3000
 
   #
   # API
@@ -221,7 +206,7 @@ defmodule Craft.Consensus do
 
     RPC.request_vote(data, pre_vote: true)
 
-    {:keep_state_and_data, [{:state_timeout, @election_timeout, :election_failed}]}
+    {:keep_state_and_data, [{:state_timeout, election_timeout(), :election_failed}]}
   end
 
   def lonely(:state_timeout, :election_failed, data) do
@@ -625,7 +610,7 @@ defmodule Craft.Consensus do
     RPC.request_vote(data, leadership_transfer: true)
 
     # TODO: if election fails, send :error to leadership_transfer_request_id
-    {:keep_state, data, [{:state_timeout, @election_timeout, :election_failed}]}
+    {:keep_state, data, [{:state_timeout, election_timeout(), :election_failed}]}
   end
 
   def candidate(:enter, _previous_state, data) do
@@ -639,7 +624,7 @@ defmodule Craft.Consensus do
 
     RPC.request_vote(data)
 
-    {:keep_state, data, [{:state_timeout, @election_timeout, :election_failed}]}
+    {:keep_state, data, [{:state_timeout, election_timeout(), :election_failed}]}
   end
 
   def candidate(:state_timeout, :election_failed, data) do
@@ -798,7 +783,7 @@ defmodule Craft.Consensus do
 
     actions = [
       {:state_timeout, 0, :heartbeat},
-      {{:timeout, :check_quorum}, @checkquorum_interval, :check_quorum}
+      {{:timeout, :check_quorum}, checkquorum_interval(), :check_quorum}
     ]
 
     if data.global_clock do
@@ -822,18 +807,18 @@ defmodule Craft.Consensus do
   end
 
   def leader(:state_timeout, :heartbeat, data) do
-    {:keep_state, heartbeat(data), [{:state_timeout, @heartbeat_interval, :heartbeat}]}
+    {:keep_state, heartbeat(data), [{:state_timeout, heartbeat_interval(), :heartbeat}]}
   end
 
   def leader({:timeout, :check_quorum}, :check_quorum, data) do
-    if data.leader_state.quorum_status.latest_successful_round_sent_at < :erlang.monotonic_time(:millisecond) - @checkquorum_interval do
+    if data.leader_state.quorum_status.latest_successful_round_sent_at < :erlang.monotonic_time(:millisecond) - checkquorum_interval() do
       Logger.info("unable to make quorum, stepping down.", logger_metadata(data, trace: {:check_quorum, :failed}))
 
       {:next_state, :lonely, data}
     else
       Logger.debug("check-quorum successful", logger_metadata(data, trace: {:check_quorum, :ok}))
 
-      {:keep_state_and_data, [{{:timeout, :check_quorum}, @checkquorum_interval, :check_quorum}]}
+      {:keep_state_and_data, [{{:timeout, :check_quorum}, checkquorum_interval(), :check_quorum}]}
     end
   end
 
@@ -915,7 +900,7 @@ defmodule Craft.Consensus do
           if membership_change.action == :remove && membership_change.node == node() do
             data = LeaderState.transfer_leadership(data)
 
-            {:keep_state, heartbeat(data), [{{:timeout, :leadership_transfer_failed}, @leadership_transfer_timeout, :self_removal}]}
+            {:keep_state, heartbeat(data), [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :self_removal}]}
           else
             {:keep_state, data}
           end
@@ -944,7 +929,7 @@ defmodule Craft.Consensus do
 
     data = LeaderState.transfer_leadership(data, to_node, id)
 
-    actions = [{{:timeout, :leadership_transfer_failed}, @leadership_transfer_timeout, :user_requested}]
+    actions = [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :user_requested}]
 
     {:keep_state, heartbeat(data), actions}
   end
@@ -960,7 +945,7 @@ defmodule Craft.Consensus do
     if Members.can_vote?(data.members, to_node) do
       data = LeaderState.transfer_leadership(data, to_node, id)
 
-      actions = [{{:timeout, :leadership_transfer_failed}, @leadership_transfer_timeout, :user_requested}]
+      actions = [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :user_requested}]
 
       {:keep_state, heartbeat(data), actions}
     else
@@ -1031,7 +1016,7 @@ defmodule Craft.Consensus do
   end
 
   defp become_lonely_timeout do
-    {:state_timeout, @lonely_timeout, :become_lonely}
+    {:state_timeout, lonely_timeout(), :become_lonely}
   end
 
   defp become_lonely(%{term: term}, data) do
@@ -1050,7 +1035,7 @@ defmodule Craft.Consensus do
       if state.global_clock do
         case GlobalTimestamp.now(state.global_clock) do
           {:ok, now} ->
-            State.set_lease_expires_at(state, GlobalTimestamp.add(now, @leader_lease_period, :millisecond))
+            State.set_lease_expires_at(state, GlobalTimestamp.add(now, leader_lease_period(), :millisecond))
 
           error ->
             Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state, trace: :global_clock_failure))
