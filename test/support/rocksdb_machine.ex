@@ -53,19 +53,24 @@ defmodule Craft.RocksDBMachine do
   end
 
   @impl true
-  def handle_command({:put, k, v}, log_index, state) do
+  def handle_commands(commands, state) do
     {:ok, batch} = :rocksdb.batch()
-    :ok = :rocksdb.batch_put(batch, encode(k), encode(v))
-    :ok = :rocksdb.batch_put(batch, state.log_index_column_family, @log_index_key, encode(log_index))
+
+    replies =
+      Enum.map(commands, fn 
+        {{:put, k, v}, _log_index} ->
+          :ok = :rocksdb.batch_put(batch, encode(k), encode(v))
+
+          :ok
+      end)
+
+    {_command, last_log_index} = List.last(commands)
+    :ok = :rocksdb.batch_put(batch, state.log_index_column_family, @log_index_key, encode(last_log_index))
+
     :ok = :rocksdb.write_batch(state.db, batch, sync: true)
     :ok = :rocksdb.release_batch(batch)
 
-    {:ok, state}
-  end
-
-  # TODO: inject this clause via `use Craft.Machine`
-  def handle_command(_, _log_index, state) do
-    {{:error, :unknown_command}, state}
+    {replies, state}
   end
 
   @impl true

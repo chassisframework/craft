@@ -27,11 +27,12 @@ defmodule Craft.Machine do
 
   @callback init(Craft.group_name()) :: {:ok, private()}
   @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
+  @callback handle_commands([{Craft.command(), Craft.log_index()}], private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
   @callback handle_query(Craft.query(), reply_from(), private()) :: {:reply, Craft.reply()} | :noreply
   @callback handle_role_change(role(), private()) :: private()
   @callback handle_lease_taken(private()) :: private()
   @callback handle_info(term(), private()) :: private()
-  @optional_callbacks handle_role_change: 2, handle_lease_taken: 1, handle_info: 2
+  @optional_callbacks handle_role_change: 2, handle_lease_taken: 1, handle_info: 2, handle_command: 3, handle_commands: 2
 
   defmodule MutableMachine do
     @type private() :: Craft.Machine.private()
@@ -275,17 +276,52 @@ defmodule Craft.Machine do
         state
       end
 
+    # possible optimization opportunity: batch fetch
+    entries =
+      Enum.map(state.last_applied+1..new_commit_index//1, fn index ->
+        {:ok, entry} = Persistence.fetch(log, index)
+
+        {index, entry}
+      end)
+
     # apply machine commands
     state =
-      Enum.reduce(state.last_applied+1..new_commit_index//1, state, fn index, state ->
-        case Persistence.fetch(log, index) do
-          {:ok, %EmptyEntry{}} ->
+      if function_exported?(state.module, :handle_commands, 2) do
+        entries_by_type = Enum.group_by(entries, fn {_index, entry} -> entry.__struct__ end)
+
+        # we don't guarantee linearizability between membership changes and commands, so they're handled out-of-order here
+        state =
+          Enum.reduce(entries_by_type[MembershipEntry] || [], state, fn {index, _entry}, state ->
+            reply_to_command(state, index, :ok)
+          end)
+
+        case entries_by_type[CommandEntry] do
+          [_ | _] ->
+            {replies, private} =
+              entries_by_type[CommandEntry]
+              |> Enum.map(fn {index, entry} -> {entry.command, index} end)
+              |> state.module.handle_commands(state.private)
+
+            state = %{state | private: private}
+
+            entries_by_type[CommandEntry]
+            |> Enum.zip(replies)
+            |> Enum.reduce(state, fn {{index, _entry}, reply}, state ->
+              reply_to_command(state, index, reply)
+            end)
+
+          _ ->
+            state
+        end
+      else
+        Enum.reduce(entries, state, fn
+          {_index, %EmptyEntry{}}, state ->
             state
 
-          {:ok, %MembershipEntry{}} ->
+          {index, %MembershipEntry{}}, state ->
             reply_to_command(state, index, :ok)
 
-          {:ok, %CommandEntry{command: command} = entry} ->
+          {index, %CommandEntry{command: command} = entry}, state ->
             Logger.debug("applying command entry", logger_metadata(trace: {:applying_command, entry}))
 
             {reply, private} =
@@ -293,19 +329,20 @@ defmodule Craft.Machine do
                 {reply, private} ->
                   {reply, private}
 
-                {reply, side_effects, private} ->
-                  if state.role == :leader do
-                    Enum.each(side_effects, fn {m, f, a} ->
-                      spawn(fn -> apply(m, f, a) end)
-                    end)
-                  end
+                # {reply, side_effects, private} ->
+                #   if state.role == :leader do
+                #     Enum.each(side_effects, fn {m, f, a} ->
+                #       spawn(fn -> apply(m, f, a) end)
+                #     end)
+                #   end
 
-                  {reply, private}
+                #   {reply, private}
               end
 
             reply_to_command(%{state | private: private}, index, reply)
-        end
-      end)
+        end)
+      end
+
 
     # update leader-readiness if user's state machine has caught up post-election.
     state =

@@ -13,7 +13,7 @@ config :logger, :default_formatter,
 
 config :craft, :snapshot_server_port, 1337
 
-heartbeat_interval = 100 #ms
+heartbeat_interval = 50 #ms
 config :craft, :heartbeat_interval, heartbeat_interval
 
 # max time in the past within which leader must have a successful quorum, or it'll step down

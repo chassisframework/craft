@@ -24,7 +24,7 @@ defmodule Craft.Bootstrap do
   def start_dev_consensus_group(nodes) do
     name = :crypto.strong_rand_bytes(3) |> Base.encode16()
 
-    Craft.start_group(name, nodes, Craft.SimpleMachine, global_clock: Craft.GlobalTimestamp.ClockBound)
+    Craft.start_group(name, nodes, Craft.RocksDBMachine, global_clock: Craft.GlobalTimestamp.ClockBound)
 
     {name, nodes}
   end
