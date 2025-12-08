@@ -541,7 +541,8 @@ defmodule Craft.Consensus do
 
     if success && data.commit_index > old_commit_index do
       # TODO: make log length configurable
-      log_too_long = Persistence.length(data.persistence) > 10_000
+      # log_too_long = Persistence.length(data.persistence) > 10_000
+      log_too_long = false
 
       Logger.debug("quorum reached", logger_metadata(data, trace: :quorum_reached))
 

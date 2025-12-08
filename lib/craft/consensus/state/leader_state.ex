@@ -148,7 +148,8 @@ defmodule Craft.Consensus.State.LeaderState do
       log_too_long = Persistence.length(state.persistence) > 10_000
       # log_too_big = Persistence.log_size() > 100mb or 100 entries, etc
 
-      Machine.quorum_reached(state, all_followers_caught_up && log_too_long)
+      Machine.quorum_reached(state, false)
+      # Machine.quorum_reached(state, all_followers_caught_up && log_too_long)
     end
 
     state
