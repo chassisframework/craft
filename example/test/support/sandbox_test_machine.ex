@@ -7,8 +7,14 @@ defmodule Craft.SandboxTestMachine do
   end
 
   @impl true
-  def handle_command({:put, k, v}, _log_index, state) do
-    {:ok, Map.put(state, k, v)}
+  def handle_commands(commands, state) do
+    {state, replies} = 
+      Enum.reduce(commands, {state, []}, fn
+        {{:put, k, v}, _index}, {state, replies} ->
+          {Map.put(state, k, v), [:ok | replies]}
+      end)
+
+    {replies, state}
   end
 
   @impl true
@@ -23,7 +29,7 @@ defmodule Craft.SandboxTestMachine do
         Craft.reply(from, {:ok, Map.get(state, k)})
       rescue
         e ->
-          {:direct, from} = from
+          {:direct, from, _sandbox_pid} = from
           GenServer.reply(from, {:error, e})
       end
     end)

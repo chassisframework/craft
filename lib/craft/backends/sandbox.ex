@@ -309,10 +309,15 @@ defmodule Craft.Sandbox do
   def handle_call({:command, name, command}, _from, state) do
     if machine_state = state[name] do
       {reply, private} =
-        machine_state.module.handle_command(command, machine_state.index, machine_state.private)
+        if function_exported?(machine_state.module, :handle_commands, 2) do
+          {[reply], private} = machine_state.module.handle_commands([{command, machine_state.index}], machine_state.private)
 
-      {:reply, reply,
-       Map.put(state, name, %{machine_state | private: private, index: machine_state.index + 1})}
+          {reply, private}
+        else
+          machine_state.module.handle_command(command, machine_state.index, machine_state.private)
+        end
+
+      {:reply, reply, Map.put(state, name, %{machine_state | private: private, index: machine_state.index + 1})}
     else
       {:reply, {:error, :unknown_group}, state}
     end
@@ -320,11 +325,7 @@ defmodule Craft.Sandbox do
 
   def handle_call({:query, name, query}, from, state) do
     if machine_state = state[name] do
-      case machine_state.module.handle_query(
-             query,
-             {:direct, from, self()},
-             machine_state.private
-           ) do
+      case machine_state.module.handle_query(query, {:direct, from, self()}, machine_state.private) do
         {:reply, response} ->
           {:reply, response, state}
 
