@@ -152,7 +152,12 @@ defmodule Craft.Sandbox do
 
   @doc false
   def command(command, name, _opts) do
-    GenServer.call(find!(), {:command, name, command})
+    GenServer.call(find!(), {:command, name, command, _async? = false})
+  end
+
+  @doc false
+  def async_command(command, name, _opts) do
+    GenServer.call(find!(), {:command, name, command, _async? = true})
   end
 
   @doc false
@@ -306,7 +311,7 @@ defmodule Craft.Sandbox do
     end
   end
 
-  def handle_call({:command, name, command}, _from, state) do
+  def handle_call({:command, name, command, async?}, from, state) do
     if machine_state = state[name] do
       {reply, private} =
         if function_exported?(machine_state.module, :handle_commands, 2) do
@@ -317,7 +322,17 @@ defmodule Craft.Sandbox do
           machine_state.module.handle_command(command, machine_state.index, machine_state.private)
         end
 
-      {:reply, reply, Map.put(state, name, %{machine_state | private: private, index: machine_state.index + 1})}
+      state = Map.put(state, name, %{machine_state | private: private, index: machine_state.index + 1})
+
+      if async? do
+        {pid, ref} = from
+
+        Kernel.send(pid, {:"$craft_command", ref, reply})
+
+        {:reply, {:ok, ref}, state}
+      else
+        {:reply, reply, state}
+      end
     else
       {:reply, {:error, :unknown_group}, state}
     end

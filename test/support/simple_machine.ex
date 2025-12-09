@@ -9,6 +9,14 @@ defmodule Craft.SimpleMachine do
     Craft.command({:put, k, v}, name, opts)
   end
 
+  def put_async(name, k, v, opts \\ []) do
+    Craft.async_command({:put, k, v}, name, opts)
+  end
+
+  def reset(name) do
+    Craft.command(:reset, name)
+  end
+
   def get(name, k, opts \\ []) do
     Craft.query({:get, k}, name, opts)
   end
@@ -41,8 +49,16 @@ defmodule Craft.SimpleMachine do
   end
 
   @impl true
+  def handle_command(:reset, _log_index, _state) do
+    {:ok, %{}}
+  end
+
   def handle_command({:put, k, v}, _log_index, state) do
     {:ok, Map.put(state, k, v)}
+  end
+
+  def handle_command({:delete, k}, _log_index, state) do
+    {:ok, Map.delete(state, k)}
   end
 
   @impl true

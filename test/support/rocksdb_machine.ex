@@ -8,6 +8,10 @@ defmodule Craft.RocksDBMachine do
     Craft.command({:put, k, v}, name)
   end
 
+  def put_async(name, k, v) do
+    Craft.async_command({:put, k, v}, name)
+  end
+
   def get(name, k) do
     Craft.query({:get, k}, name)
   end

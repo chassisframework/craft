@@ -135,6 +135,11 @@ defmodule Craft do
   """
   def command(command, name, opts \\ []), do: backend().command(command, name, opts)
 
+  @doc """
+  Asynchronous version of `command/3`, returns a unique `ref`, then sends a message of the form `{:"$craft_command", ref, reply}` with the reply to the caller when the command has executed.
+  """
+  def async_command(command, name, opts \\ []), do: backend().async_command(command, name, opts)
+
   #
   # Craft.query(command, name, consistency: :linearizable)
   # if `consistency` is `:linearizable`, will address leader

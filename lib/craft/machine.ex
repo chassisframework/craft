@@ -208,8 +208,14 @@ defmodule Craft.Machine do
       GenServer.reply(from, response)
     end
 
-    for {_index, from} <- state.client_commands do
-      GenServer.reply(from, response)
+    for {_index, {from, async_caller}} <- state.client_commands do
+      if async_caller do
+        {_pid, ref} = from
+
+        send(async_caller, {:"$craft_command", ref, response})
+      else
+        GenServer.reply(from, response)
+      end
     end
 
     for from <- state.pending_parallel_queries do
@@ -527,12 +533,21 @@ defmodule Craft.Machine do
     end
   end
 
-  def handle_call({:command, command}, from, state) do
+  # since it's over an rpc, `from` is the rpc process, and `async_caller` is the client (if it's an async command)
+  def handle_call({:command, command, async_caller}, from, state) do
     case Consensus.command(state.name, command) do
       {:ok, index} ->
-        Logger.debug("sent command to consensus", logger_metadata(trace: {:command, from, command}))
+        Logger.debug("sent command to consensus", logger_metadata(trace: {:command, from, command, async_caller}))
 
-        {:noreply, %{state | client_commands: Map.put(state.client_commands, index, from)}}
+        state = %{state | client_commands: Map.put(state.client_commands, index, {from, async_caller})}
+
+        if async_caller do
+          {_pid, ref} = from
+
+          {:reply, {:ok, ref}, state}
+        else
+          {:noreply, state}
+        end
 
       # not leader, not leaseholder, etc...
       error ->
@@ -673,11 +688,16 @@ defmodule Craft.Machine do
 
   defp reply_to_command(state, index, reply) do
     with :leader <- state.role,
-         {from, client_commands} when not is_nil(from) <- Map.pop(state.client_commands, index) do
-      GenServer.reply(from, reply)
+         {{from, async_caller}, client_commands} <- Map.pop(state.client_commands, index) do
+      if async_caller do
+        {_pid, ref} = from
+
+        send(async_caller, {:"$craft_command", ref, reply})
+      else
+        GenServer.reply(from, reply)
+      end
 
       %{state | client_commands: client_commands}
-
     else
       _ ->
         state

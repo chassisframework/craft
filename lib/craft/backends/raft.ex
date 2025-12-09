@@ -87,13 +87,13 @@ defmodule Craft.Raft do
         {:ok, pid}
     end
 
-    with_leader_redirect(name, &call_machine(name, &1, {:command, {:add_member, node}}, timeout))
+    with_leader_redirect(name, &call_machine(name, &1, {:command, {:add_member, node}, nil}, timeout))
   end
 
   def remove_member(name, node, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5_000)
 
-    with_leader_redirect(name, &call_machine(name, &1, {:command, {:remove_member, node}}, timeout))
+    with_leader_redirect(name, &call_machine(name, &1, {:command, {:remove_member, node}, nil}, timeout))
   end
 
   def transfer_leadership(name, to_node) do
@@ -164,7 +164,13 @@ defmodule Craft.Raft do
   def command(command, name, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5_000)
 
-    with_leader_redirect(name, &call_machine(name, &1, {:command, {:machine_command, command}}, timeout))
+    with_leader_redirect(name, &call_machine(name, &1, {:command, {:machine_command, command}, nil}, timeout))
+  end
+
+  def async_command(command, name, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    with_leader_redirect(name, &call_machine(name, &1, {:command, {:machine_command, command}, self()}, timeout))
   end
 
   def query(query, name, opts \\ []) do

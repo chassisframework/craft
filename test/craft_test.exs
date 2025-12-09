@@ -16,6 +16,9 @@ defmodule CraftTest do
 
     assert :ok = SimpleMachine.put(name, :a, 123)
     assert {:ok, 123} = SimpleMachine.get(name, :a)
+
+    assert {:ok, ref} = SimpleMachine.put_async(name, :b, 456)
+    assert_receive {:"$craft_command", ^ref, :ok}
   end
 
   describe "query/3" do
