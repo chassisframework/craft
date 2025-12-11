@@ -6,7 +6,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
 
   import Craft.Tracing, only: [logger_metadata: 1]
 
-  @num_rounds 20
+  @num_rounds 100
 
   defstruct [
     :current_round_sent_at,

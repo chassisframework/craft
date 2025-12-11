@@ -13,7 +13,7 @@ defmodule Craft.Raft do
   @doc false
   def init do
     if :net_kernel.get_state().started == :no do
-      Node.start(:craft, :shortnames)
+      Node.start(:craft, :longnames)
     end
   end
 

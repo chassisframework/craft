@@ -69,7 +69,7 @@ defmodule Craft.Application do
 
       Application.put_env(:craft, :data_dir, data_dir)
     else
-      Application.fetch_env!(:craft, :data_dir) |> File.mkdir_p!()
+      Application.get_env(:craft, :data_dir, "craft_data") |> File.mkdir_p!()
     end
   end
 
