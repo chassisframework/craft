@@ -69,6 +69,10 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
             round_is_most_recent_and_just_succeeded? = round_successful? and (!quorum_status.latest_successful_round_sent_at ||  round_sent_at > quorum_status.latest_successful_round_sent_at)
             follower_lagging? = round_sent_at != quorum_status.current_round_sent_at
 
+            if follower_lagging? do
+              Logger.warning("heartbeat from lagging follower: #{inspect results}.", logger_metadata(state))
+            end
+
             quorum_status =
               if round_is_most_recent_and_just_succeeded? do
                 %{quorum_status | latest_successful_round_sent_at: results.heartbeat_sent_at}
