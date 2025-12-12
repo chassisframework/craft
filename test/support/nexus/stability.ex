@@ -1,6 +1,6 @@
 # if three rounds of empty AppendEntries messages take place with the same leader, we consider the group stable
 defmodule Craft.Nexus.Stability do
-  alias Craft.RPC.AppendEntries
+  alias Craft.Message.AppendEntries
 
   defmodule State do
     defstruct [:members, :leader, :counts, :proportion]

@@ -1,6 +1,6 @@
 defmodule Craft.Consensus.State.Election do
   alias Craft.Consensus.State.Members
-  alias Craft.RPC.RequestVote
+  alias Craft.Message.RequestVote
 
   defstruct [
     num_votes: 0,

@@ -1,8 +1,8 @@
-defmodule Craft.RPC.AppendEntries do
+defmodule Craft.Message.AppendEntries do
   alias Craft.Consensus.State
   alias Craft.Consensus.State.LeaderState
   alias Craft.Persistence
-  alias Craft.RPC.AppendEntries.LeadershipTransfer
+  alias Craft.Message.AppendEntries.LeadershipTransfer
 
   require Logger
 
@@ -65,7 +65,7 @@ defmodule Craft.RPC.AppendEntries do
   end
 
   defmodule Results do
-    alias Craft.RPC.AppendEntries
+    alias Craft.Message.AppendEntries
 
     defstruct [
       :term,

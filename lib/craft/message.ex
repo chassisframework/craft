@@ -1,11 +1,11 @@
-defmodule Craft.RPC do
+defmodule Craft.Message do
   @moduledoc false
 
   alias Craft.Consensus.State
   alias Craft.Consensus.State.Members
-  alias Craft.RPC.AppendEntries
-  alias Craft.RPC.InstallSnapshot
-  alias Craft.RPC.RequestVote
+  alias Craft.Message.AppendEntries
+  alias Craft.Message.InstallSnapshot
+  alias Craft.Message.RequestVote
 
   require Logger
 

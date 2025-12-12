@@ -1,4 +1,4 @@
-defmodule Craft.RPC.InstallSnapshot do
+defmodule Craft.Message.InstallSnapshot do
   alias Craft.Persistence
 
   defstruct [
@@ -34,7 +34,7 @@ defmodule Craft.RPC.InstallSnapshot do
   end
 
   defmodule Results do
-    alias Craft.RPC.InstallSnapshot
+    alias Craft.Message.InstallSnapshot
 
     defstruct [
       # if the leader is deposed during a snapshot transfer, we still want to hear

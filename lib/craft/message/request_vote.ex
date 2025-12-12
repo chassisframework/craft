@@ -1,4 +1,4 @@
-defmodule Craft.RPC.RequestVote do
+defmodule Craft.Message.RequestVote do
   alias Craft.Consensus.State
 
   defstruct [

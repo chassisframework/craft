@@ -28,10 +28,10 @@ defmodule Craft.Consensus do
   alias Craft.Machine
   alias Craft.MemberCache
   alias Craft.Persistence
-  alias Craft.RPC
-  alias Craft.RPC.AppendEntries
-  alias Craft.RPC.InstallSnapshot
-  alias Craft.RPC.RequestVote
+  alias Craft.Message
+  alias Craft.Message.AppendEntries
+  alias Craft.Message.InstallSnapshot
+  alias Craft.Message.RequestVote
   alias Craft.SnapshotServerClient
 
   require Logger
@@ -204,7 +204,7 @@ defmodule Craft.Consensus do
   def lonely(:state_timeout, :begin_pre_vote, data) do
     Logger.info("pre-vote started", logger_metadata(data, trace: :pre_vote_started))
 
-    RPC.request_vote(data, pre_vote: true)
+    Message.request_vote(data, pre_vote: true)
 
     {:keep_state_and_data, [{:state_timeout, election_timeout(), :election_failed}]}
   end
@@ -227,7 +227,7 @@ defmodule Craft.Consensus do
 
     Logger.info("#{if vote_granted, do: "granting", else: "denying"} pre-vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: vote_granted}))
 
-    RPC.respond_vote(request_vote, vote_granted, data)
+    Message.respond_vote(request_vote, vote_granted, data)
 
     {:keep_state, data}
   end
@@ -242,7 +242,7 @@ defmodule Craft.Consensus do
 
     Logger.debug("#{if vote_granted, do: "granting", else: "denying"} vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: vote_granted}))
 
-    RPC.respond_vote(request_vote, vote_granted, data)
+    Message.respond_vote(request_vote, vote_granted, data)
 
     {:keep_state, data}
   end
@@ -250,7 +250,7 @@ defmodule Craft.Consensus do
   def lonely(:cast, %RequestVote{pre_vote: false} = request_vote, data) do
     Logger.info("denying vote to #{request_vote.candidate_id}, already voted in this term", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: false}))
 
-    RPC.respond_vote(request_vote, false, data)
+    Message.respond_vote(request_vote, false, data)
 
     {:keep_state, data}
   end
@@ -394,7 +394,7 @@ defmodule Craft.Consensus do
 
     :ok = Machine.receive_snapshot(data.name, install_snapshot)
 
-    RPC.respond_install_snapshot(install_snapshot, true, data)
+    Message.respond_install_snapshot(install_snapshot, true, data)
 
     {:next_state, :follower, %{data | persistence: persistence}}
   end
@@ -456,7 +456,7 @@ defmodule Craft.Consensus do
 
     Logger.info("#{if vote_granted, do: "granting", else: "denying"} leadership transfer vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: vote_granted}))
 
-    RPC.respond_vote(request_vote, vote_granted, data)
+    Message.respond_vote(request_vote, vote_granted, data)
 
     {:keep_state, data}
   end
@@ -465,7 +465,7 @@ defmodule Craft.Consensus do
   def follower(:cast, %RequestVote{} = request_vote, data) do
     Logger.info("denying #{if request_vote.pre_vote, do: "pre-", else: ""}vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: false, reason: "not lonely"}))
 
-    RPC.respond_vote(request_vote, false, data)
+    Message.respond_vote(request_vote, false, data)
 
     :keep_state_and_data
   end
@@ -537,7 +537,7 @@ defmodule Craft.Consensus do
 
     Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
 
-    RPC.respond_append_entries(append_entries, success, data)
+    Message.respond_append_entries(append_entries, success, data)
 
     if success && data.commit_index > old_commit_index do
       # TODO: make log length configurable
@@ -607,7 +607,7 @@ defmodule Craft.Consensus do
 
     Logger.info("became candidate, initiating leadership transfer election", logger_metadata(data, trace: {:became, :candidate}))
 
-    RPC.request_vote(data, leadership_transfer: true)
+    Message.request_vote(data, leadership_transfer: true)
 
     # TODO: if election fails, send :error to leadership_transfer_request_id
     {:keep_state, data, [{:state_timeout, election_timeout(), :election_failed}]}
@@ -622,7 +622,7 @@ defmodule Craft.Consensus do
 
     Logger.info("became candidate", logger_metadata(data, trace: {:became, :candidate}))
 
-    RPC.request_vote(data)
+    Message.request_vote(data)
 
     {:keep_state, data, [{:state_timeout, election_timeout(), :election_failed}]}
   end
@@ -647,7 +647,7 @@ defmodule Craft.Consensus do
   def candidate(:cast, %RequestVote{} = request_vote, data) do
     Logger.info("denying #{(if request_vote.pre_vote, do: "pre-", else: "")}vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_received, granted?: false, pre_vote?: request_vote.pre_vote}))
 
-    RPC.respond_vote(request_vote, false, data)
+    Message.respond_vote(request_vote, false, data)
 
     :keep_state_and_data
   end
@@ -862,7 +862,7 @@ defmodule Craft.Consensus do
 
     Logger.info("#{if vote_granted, do: "granting", else: "denying"} pre-vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: vote_granted}))
 
-    RPC.respond_vote(request_vote, vote_granted, data)
+    Message.respond_vote(request_vote, vote_granted, data)
 
     {:keep_state, data}
   end
@@ -873,7 +873,7 @@ defmodule Craft.Consensus do
   def leader(:cast, %AppendEntries.Results{} = results, data) do
     case LeaderState.handle_append_entries_results(data, results) do
       {:needs_snapshot, data} ->
-        RPC.install_snapshot(data, results.from)
+        Message.install_snapshot(data, results.from)
 
         {:keep_state, data}
 
@@ -1059,11 +1059,11 @@ defmodule Craft.Consensus do
             end
           end
 
-        RPC.install_snapshot(state, to_node)
+        Message.install_snapshot(state, to_node)
 
         state
       else
-        RPC.append_entries(state, to_node)
+        Message.append_entries(state, to_node)
 
         state
       end

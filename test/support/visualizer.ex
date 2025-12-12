@@ -11,7 +11,7 @@ defmodule Craft.Visualizer do
   end
 
   def message_type(msg) do
-    (Module.split(msg.__struct__) -- ["Craft", "RPC"]) |> Enum.join(".")
+    (Module.split(msg.__struct__) -- ["Craft", "Message"]) |> Enum.join(".")
   end
 
   def format_struct(msg) do

@@ -7,7 +7,7 @@ defmodule Craft.Consensus.State do
   alias Craft.Log.SnapshotEntry
   alias Craft.Persistence
   alias Craft.Persistence.Metadata
-  alias Craft.RPC.RequestVote
+  alias Craft.Message.RequestVote
 
   require Logger
 

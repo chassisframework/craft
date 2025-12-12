@@ -6,8 +6,8 @@ defmodule Craft.Consensus.State.LeaderState do
   alias Craft.Machine
   alias Craft.MemberCache
   alias Craft.Persistence
-  alias Craft.RPC.AppendEntries
-  alias Craft.RPC.InstallSnapshot
+  alias Craft.Message.AppendEntries
+  alias Craft.Message.InstallSnapshot
   alias Craft.SnapshotServer.SnapshotTransfer
 
   defstruct [

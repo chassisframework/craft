@@ -1,6 +1,6 @@
 defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
   alias Craft.Consensus.State
-  alias Craft.RPC.AppendEntries
+  alias Craft.Message.AppendEntries
 
   require Logger
 

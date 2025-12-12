@@ -3,7 +3,7 @@ defmodule Craft.LivenessTest do
       parameterize: (for leases <- [true], do: %{leader_leases: leases})
 
   alias Craft.Nexus.Stability
-  alias Craft.RPC.RequestVote
+  alias Craft.Message.RequestVote
   alias Craft.SimpleMachine
 
   nexus_test "processes commands with a minimal quorum operational", %{nodes: nodes, name: name, nexus: nexus, leader_leases: leases} do
