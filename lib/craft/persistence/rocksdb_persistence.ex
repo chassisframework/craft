@@ -43,7 +43,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
     write_opts = Keyword.get(opts, :write_opts, [sync: true])
 
-    db_opts = [create_if_missing: true, create_missing_column_families: true]
+    db_opts = [create_if_missing: true, create_missing_column_families: true, compression: :none, total_threads: System.schedulers_online()]
 
     {:ok, db, [_default, log_column_family_handle, metadata_column_family_handle]} =
       data_dir
@@ -121,8 +121,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
     if state.append_buffer && !state.append_buffer.empty? do
       :ok = :rocksdb.write_batch(state.db, state.append_buffer.batch, state.write_opts)
 
-      state = %{release_append_buffer(state)| latest_index: state.append_buffer.index, latest_term: state.append_buffer.term}
-      state
+      %{release_append_buffer(state)| latest_index: state.append_buffer.index, latest_term: state.append_buffer.term}
     else
       state
     end
@@ -195,34 +194,23 @@ defmodule Craft.Persistence.RocksDBPersistence do
   end
 
   @impl true
-  # the current version of rocksdb-erlang doesn't support delete_range in transactions, so we have to do it with an iterator
-  # in order to maintain atomicity with the snapshot_entry insertion
+  # the current version of rocksdb-erlang doesn't support delete_range in transactions,
+  # so we have to explicitly enumerate in order to maintain atomicity with the snapshot_entry insertion
   #
   # https://github.com/facebook/rocksdb/issues/4812
   def truncate(%__MODULE__{} = state, index, snapshot_entry) do
     {:ok, transaction} = :rocksdb.transaction(state.db, state.write_opts)
     {:ok, iterator} = :rocksdb.transaction_iterator(transaction, state.log_cf, [])
+    {:ok, first_index, _value} = :rocksdb.iterator_move(iterator, :first)
 
-    do_truncate(transaction, iterator, state.log_cf, encode(index))
+    for i <- decode(first_index)..index do
+      :ok = :rocksdb.transaction_delete(transaction, state.log_cf, encode(i))
+    end
 
     :ok = :rocksdb.transaction_put(transaction, state.log_cf, encode(index), encode(snapshot_entry))
     :ok = :rocksdb.transaction_commit(transaction)
 
     set_latest_index_and_term(state)
-  end
-
-  defp do_truncate(transaction, iterator, log_cf, max_index) do
-    case :rocksdb.iterator_move(iterator, :first) do
-      {:ok, index, _value} when index <= max_index ->
-        :ok = :rocksdb.transaction_delete(transaction, log_cf, index)
-        do_truncate(transaction, iterator, log_cf, max_index)
-
-      {:ok, _index, _value} ->
-        :ok
-
-      {:error, :invalid_iterator} ->
-        :ok
-    end
   end
 
   @impl true
