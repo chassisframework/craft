@@ -46,10 +46,9 @@ defmodule Craft.SnapshotServer do
 
   @impl true
   def init(args) do
-    data_dir = args[:data_dir] || Application.get_env(:craft, :data_dir, ".")
     port = args[:port] || Application.get_env(:craft, :port, 0)
 
-    {:ok, %State{data_dir: data_dir, port: port}, {:continue, :listen}}
+    {:ok, %State{data_dir: args[:data_dir], port: port}, {:continue, :listen}}
   end
 
   @impl true
@@ -72,7 +71,8 @@ defmodule Craft.SnapshotServer do
   def handle_info(:accept, state) do
     case :gen_tcp.accept(state.socket, 100) do
       {:ok, client} ->
-        {:ok, pid} = Task.Supervisor.start_child(__MODULE__.Supervisor, fn -> loop_receive({client, state.data_dir}) end)
+        data_dir = state.data_dir || Application.get_env(:craft, :data_dir)
+        {:ok, pid} = Task.Supervisor.start_child(__MODULE__.Supervisor, fn -> loop_receive({client, data_dir}) end)
         :ok = :gen_tcp.controlling_process(client, pid)
 
         handle_info(:accept, state)

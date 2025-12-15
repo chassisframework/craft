@@ -8,8 +8,6 @@ defmodule Craft.Application do
     silence_sasl_logger()
     set_nexus_logger()
 
-    create_data_dir!()
-
     children = [
       Craft.SnapshotServer,
       {Task.Supervisor, name: Craft.SnapshotServer.Supervisor},
@@ -53,23 +51,6 @@ defmodule Craft.Application do
 
       _ ->
         nil
-    end
-  end
-
-  defp create_data_dir! do
-    if Application.get_env(:craft, :base_data_dir) do
-      data_dir =
-        Path.join([
-          Application.get_env(:craft, :base_data_dir),
-          to_string(Mix.env()),
-          to_string(node())
-        ])
-
-      File.mkdir_p!(data_dir)
-
-      Application.put_env(:craft, :data_dir, data_dir)
-    else
-      Application.get_env(:craft, :data_dir, "craft_data") |> File.mkdir_p!()
     end
   end
 

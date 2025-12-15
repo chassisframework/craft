@@ -136,7 +136,26 @@ defmodule Craft.Configuration do
     end
   end
 
+  def create_data_dir!() do
+    if Application.get_env(:craft, :base_data_dir) do
+      data_dir =
+        Path.join([
+          Application.get_env(:craft, :base_data_dir),
+          to_string(Mix.env()),
+          to_string(node())
+        ])
+
+      File.mkdir_p!(data_dir)
+
+      Application.put_env(:craft, :data_dir, data_dir)
+    else
+      Application.get_env(:craft, :data_dir, "craft_data") |> File.mkdir_p!()
+    end
+  end
+
   def data_dir do
+    create_data_dir!()
+
     Application.get_env(:craft, :data_dir)
   end
 end
