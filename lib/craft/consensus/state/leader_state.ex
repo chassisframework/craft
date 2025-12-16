@@ -203,19 +203,24 @@ defmodule Craft.Consensus.State.LeaderState do
   end
 
   defp do_handle_append_entries_results(%State{} = state, %AppendEntries.Results{success: false} = results) do
-    # we don't know where we match the follower's log
-    state = put_in(state.leader_state.match_indices[results.from], 0)
+    case Persistence.fetch(state.persistence, results.latest_index) do
+      {:ok, entry} ->
+        if entry.term == results.latest_term do
+          # the follower's log doesn't need rewinding
+          state = put_in(state.leader_state.match_indices[results.from], results.latest_index)
+          put_in(state.leader_state.next_indices[results.from], results.latest_index + 1)
+        else
+          # we don't know where we match the follower's log
+          state = put_in(state.leader_state.match_indices[results.from], 0)
+          put_in(state.leader_state.next_indices[results.from], results.latest_index - 1)
+        end
 
-    if needs_snapshot?(state, results.from) do
-      if state.machine.__craft_mutable__() do
-        {:needs_snapshot, create_snapshot_transfer(state, results.from)}
-      else
-        {:needs_snapshot, state}
-      end
-    else
-      next_indices = Map.update!(state.leader_state.next_indices, results.from, fn next_index -> next_index - 1 end)
-
-      put_in(state.leader_state.next_indices, next_indices)
+      :error ->
+        if state.machine.__craft_mutable__() do
+          create_snapshot_transfer(state, results.from)
+        else
+          state
+        end
     end
   end
 

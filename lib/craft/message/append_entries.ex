@@ -72,6 +72,7 @@ defmodule Craft.Message.AppendEntries do
       :from,
       :success,
       :latest_index,
+      :latest_term,
       :heartbeat_sent_at
     ]
 
@@ -81,6 +82,7 @@ defmodule Craft.Message.AppendEntries do
         from: node(),
         success: success,
         latest_index: Persistence.latest_index(state.persistence),
+        latest_term: Persistence.latest_term(state.persistence),
         heartbeat_sent_at: append_entries.sent_at
       }
     end

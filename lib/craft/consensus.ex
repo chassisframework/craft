@@ -871,43 +871,37 @@ defmodule Craft.Consensus do
   def leader(:cast, %RequestVote.Results{}, _data), do: :keep_state_and_data
 
   def leader(:cast, %AppendEntries.Results{} = results, data) do
-    case LeaderState.handle_append_entries_results(data, results) do
-      {:needs_snapshot, data} ->
-        Message.install_snapshot(data, results.from)
+    data = LeaderState.handle_append_entries_results(data, results)
 
-        {:keep_state, data}
+    data =
+      Enum.reduce(data.members.catching_up_nodes, data, fn node, data ->
+        if Persistence.latest_index(data.persistence) <= Map.get(data.leader_state.match_indices, node) do
+          Logger.info("node #{inspect node} is caught up", logger_metadata(data))
 
-      data ->
-        data =
-          Enum.reduce(data.members.catching_up_nodes, data, fn node, data ->
-            if Persistence.latest_index(data.persistence) <= Map.get(data.leader_state.match_indices, node) do
-              Logger.info("node #{inspect node} is caught up", logger_metadata(data))
+          data = %{data | members: Members.allow_node_to_vote(data.members, node)}
 
-              data = %{data | members: Members.allow_node_to_vote(data.members, node)}
-
-              %{data | persistence: Persistence.append(data.persistence, MembershipEntry.new(data))}
-            else
-              data
-            end
-          end)
-
-        # the membership change has committed
-        with %MembershipChange{} = membership_change <- data.leader_state.membership_change,
-             true <- data.commit_index >= membership_change.log_index do
-          data = put_in(data.leader_state.membership_change, nil)
-
-          # if we're being removed, transfer leadership away first
-          if membership_change.action == :remove && membership_change.node == node() do
-            data = LeaderState.transfer_leadership(data)
-
-            {:keep_state, heartbeat(data), [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :self_removal}]}
-          else
-            {:keep_state, data}
-          end
+          %{data | persistence: Persistence.append(data.persistence, MembershipEntry.new(data))}
         else
-          _ ->
-            {:keep_state, data}
+          data
         end
+      end)
+
+    # the membership change has committed
+    with %MembershipChange{} = membership_change <- data.leader_state.membership_change,
+         true <- data.commit_index >= membership_change.log_index do
+      data = put_in(data.leader_state.membership_change, nil)
+
+      # if we're being removed, transfer leadership away first
+      if membership_change.action == :remove && membership_change.node == node() do
+        data = LeaderState.transfer_leadership(data)
+
+        {:keep_state, heartbeat(data), [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :self_removal}]}
+      else
+        {:keep_state, data}
+      end
+    else
+      _ ->
+        {:keep_state, data}
     end
   end
 
@@ -1046,28 +1040,15 @@ defmodule Craft.Consensus do
         state
       end
 
-    Enum.reduce(Members.other_nodes(state.members), state, fn to_node, state ->
-      if LeaderState.needs_snapshot?(state, to_node) do
-        state =
-          if LeaderState.sending_snapshot?(state, to_node) do
-            state
-          else
-            if state.machine.__craft_mutable__() do
-              LeaderState.create_snapshot_transfer(state, to_node)
-            else
-              state
-            end
-          end
-
+    for to_node <- Members.other_nodes(state.members) do
+      if state.leader_state.snapshot_transfers[to_node] do
         Message.install_snapshot(state, to_node)
-
-        state
       else
         Message.append_entries(state, to_node)
-
-        state
       end
-    end)
+    end
+
+    state
   end
 
   defp handle_command({membership_change, node}, from, data) when membership_change in [:add_member, :remove_member] do
