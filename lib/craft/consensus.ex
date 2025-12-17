@@ -1055,26 +1055,29 @@ defmodule Craft.Consensus do
     if LeaderState.config_change_in_progress?(data) do
       {:keep_state_and_data, [{:reply, from, {:error, :config_change_in_progress}}]}
     else
+      entry_index = Persistence.latest_index(data.persistence) + 1
+
       data =
         case membership_change do
           :add_member ->
-            LeaderState.add_node(data, node, Persistence.latest_index(data.persistence) + 1)
+            LeaderState.add_node(data, node, entry_index)
 
           :remove_member ->
-            LeaderState.remove_node(data, node, Persistence.latest_index(data.persistence) + 1)
+            LeaderState.remove_node(data, node, entry_index)
         end
 
       MemberCache.update(data)
 
-      append_entry(%MembershipEntry{term: data.current_term, members: data.members}, from, data)
+      entry = %MembershipEntry{term: data.current_term, members: data.members}
+      persistence = Persistence.append(data.persistence, entry)
+
+      {:keep_state, %{data | persistence: persistence}, [{:reply, from, {:ok, entry_index}}]}
     end
   end
 
   defp handle_command({:machine_command, command}, from, data) do
-    append_entry(%CommandEntry{term: data.current_term, command: command}, from, data)
-  end
+    entry = %CommandEntry{term: data.current_term, command: command}
 
-  defp append_entry(entry, from, data) do
     {persistence, entry_index} = Persistence.add_to_append_buffer(data.persistence, entry)
 
     {:keep_state, %{data | persistence: persistence}, [{:reply, from, {:ok, entry_index}}]}
