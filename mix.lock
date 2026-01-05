@@ -1,3 +1,3 @@
 %{
-  "rocksdb": {:git, "git@github.com:chassisframework/erlang-rocksdb.git", "1d7c9722831657c27468eeaca6f7c5382260bc7d", []},
+  "rocksdb": {:git, "https://github.com/EnkiMultimedia/erlang-rocksdb.git", "4c09b8e3a88b664621c92e4c5dd6ddcb3fcd1cbf", []},
 }

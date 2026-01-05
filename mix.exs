@@ -37,7 +37,7 @@ defmodule Craft.MixProject do
 
   defp deps do
     [
-      {:rocksdb, git: "git@github.com:chassisframework/erlang-rocksdb.git"}
+      {:rocksdb, github: "EnkiMultimedia/erlang-rocksdb"}
     ]
   end
 
