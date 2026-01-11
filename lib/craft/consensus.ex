@@ -28,6 +28,7 @@ defmodule Craft.Consensus do
   alias Craft.Machine
   alias Craft.MemberCache
   alias Craft.Persistence
+  alias Craft.Persistence.Metadata
   alias Craft.Message
   alias Craft.Message.AppendEntries
   alias Craft.Message.InstallSnapshot
@@ -90,6 +91,10 @@ defmodule Craft.Consensus do
 
   def backup(name, to_directory) do
     do_operation(:call, name, {:backup, to_directory})
+  end
+
+  def get_log(name) do
+    do_operation(:call, name, :get_log)
   end
 
   # casting a user command is necessary when the node that recieves the command
@@ -304,6 +309,10 @@ defmodule Craft.Consensus do
     backup(to_directory, from, data)
   end
 
+  def lonely({:call, from}, :get_log, data) do
+    get_log(from, data)
+  end
+
   def lonely({:call, from}, _request, data) do
     {:keep_state_and_data, [{:reply, from, not_leader_response(data)}]}
   end
@@ -417,6 +426,10 @@ defmodule Craft.Consensus do
     {:keep_state_and_data, [{:reply, from, {:error, :receiving_snapshot}}]}
   end
 
+  def receiving_snapshot({:call, from}, :get_log, data) do
+    get_log(from, data)
+  end
+
   def receiving_snapshot({:call, from}, _request, data) do
     {:keep_state_and_data, [{:reply, from, not_leader_response(data)}]}
   end
@@ -482,8 +495,12 @@ defmodule Craft.Consensus do
     prev_log_term = append_entries.prev_log_term
     old_commit_index = data.commit_index
     data =
-      %{data | leader_id: append_entries.leader_id}
-      |> State.set_lease_expires_at(append_entries.lease_expires_at)
+      %{data |
+        leader_id: append_entries.leader_id,
+        lease_expires_at: append_entries.lease_expires_at
+      }
+
+    data = Metadata.buffer_put(data)
 
     {success, data} =
       if Enum.empty?(append_entries.entries) do
@@ -493,12 +510,16 @@ defmodule Craft.Consensus do
           {:ok, %{term: ^prev_log_term}} ->
             rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
 
-            persistence =
-              data.persistence
-              |> Persistence.rewind(append_entries.prev_log_index)
-              |> Persistence.append(append_entries.entries)
+            persistence = Persistence.buffer_rewind(data.persistence, append_entries.prev_log_index)
 
-            data = %{data | persistence: persistence}
+            persistence =
+              Enum.reduce(append_entries.entries, persistence, fn entry, persistence ->
+                {persistence, _index} =  Persistence.buffer_append(persistence, entry)
+
+                persistence
+              end)
+
+            data = %{data | persistence: Persistence.commit_buffer(persistence)}
 
             new_membership_entry =
               append_entries.entries
@@ -544,7 +565,8 @@ defmodule Craft.Consensus do
 
       Logger.debug("quorum reached", logger_metadata(data, trace: :quorum_reached))
 
-      Machine.quorum_reached(data, log_too_long)
+      Machine.quorum_reached(data, false)
+      # Machine.quorum_reached(data, log_too_long)
     end
 
     MemberCache.update(data)
@@ -581,6 +603,10 @@ defmodule Craft.Consensus do
 
   def follower({:call, from}, {:backup, to_directory}, data) do
     backup(to_directory, from, data)
+  end
+
+  def follower({:call, from}, :get_log, data) do
+    get_log(from, data)
   end
 
   def follower({:call, from}, _request, data) do
@@ -684,8 +710,8 @@ defmodule Craft.Consensus do
       end
 
     data =
-      data
-      |> State.set_lease_expires_at(latest_leader_lease)
+      %{data | lease_expires_at: latest_leader_lease}
+      |> Metadata.write()
       |> State.record_vote(results)
 
     case State.election_result(data) do
@@ -724,6 +750,10 @@ defmodule Craft.Consensus do
 
   def candidate({:call, from}, {:backup, to_directory}, data) do
     backup(to_directory, from, data)
+  end
+
+  def candidate({:call, from}, :get_log, data) do
+    get_log(from, data)
   end
 
   def candidate({:call, from}, _request, data) do
@@ -981,6 +1011,10 @@ defmodule Craft.Consensus do
     backup(to_directory, from, data)
   end
 
+  def leader({:call, from}, :get_log, data) do
+    get_log(from, data)
+  end
+
   def leader({:call, from}, _msg, %State{leader_state: %LeaderState{leadership_transfer: %LeadershipTransfer{} = leadership_transfer}}) do
     {:keep_state_and_data, [{:reply, from, {:error, {:leadership_transfer_in_progress, leadership_transfer.current_candidate}}}]}
   end
@@ -1020,15 +1054,13 @@ defmodule Craft.Consensus do
   defp not_leader_response(%State{leader_id: leader_id}), do: {:error, {:not_leader, leader_id}}
 
   defp heartbeat(%State{} = state) do
-    state = %{state | persistence: Persistence.write_append_buffer(state.persistence)}
-
     state = LeaderState.QuorumStatus.start_new_round(state)
 
     state =
       if state.global_clock do
         case GlobalTimestamp.now(state.global_clock) do
           {:ok, now} ->
-            State.set_lease_expires_at(state, GlobalTimestamp.add(now, leader_lease_period(), :millisecond))
+            %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
 
           error ->
             Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state, trace: :global_clock_failure))
@@ -1039,13 +1071,30 @@ defmodule Craft.Consensus do
         state
       end
 
-    for to_node <- Members.other_nodes(state.members) do
+    state = Metadata.buffer_put(state)
+    state = %{state | persistence: Persistence.commit_buffer(state.persistence)}
+
+    state =
+      state.members
+      |> Members.other_nodes()
+      |> Enum.reduce(state, fn to_node, state ->
+        if LeaderState.needs_snapshot?(state, to_node) do
+          LeaderState.create_snapshot_transfer(state, to_node)
+        else
+          state
+        end
+      end)
+
+    state.members
+    |> Members.other_nodes()
+    |> Task.async_stream(fn to_node ->
       if state.leader_state.snapshot_transfers[to_node] do
         Message.install_snapshot(state, to_node)
       else
         Message.append_entries(state, to_node)
       end
-    end
+    end, ordered: false)
+    |> Stream.run()
 
     state
   end
@@ -1077,7 +1126,7 @@ defmodule Craft.Consensus do
   defp handle_command({:machine_command, command}, from, data) do
     entry = %CommandEntry{term: data.current_term, command: command}
 
-    {persistence, entry_index} = Persistence.add_to_append_buffer(data.persistence, entry)
+    {persistence, entry_index} = Persistence.buffer_append(data.persistence, entry)
 
     {:keep_state, %{data | persistence: persistence}, [{:reply, from, {:ok, entry_index}}]}
   end
@@ -1094,5 +1143,9 @@ defmodule Craft.Consensus do
       end
 
     {:keep_state_and_data, [{:reply, from, result}]}
+  end
+
+  defp get_log(from, data) do
+    {:keep_state_and_data, [{:reply, from, data.persistence}]}
   end
 end

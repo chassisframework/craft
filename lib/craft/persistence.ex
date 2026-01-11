@@ -27,16 +27,25 @@ defmodule Craft.Persistence do
   @callback latest_index(any()) :: integer()
   @callback fetch(any(), index :: integer()) :: entry()
   @callback fetch_from(any(), index :: integer()) :: [entry()]
-  @callback add_to_append_buffer(any(), entry()) :: {any(), index :: integer()}
-  @callback write_append_buffer(any()) :: any()
-  @callback release_append_buffer(any()) :: any()
+  @callback fetch_between(any(), index_range :: Range.t()) :: [entry(), ...] # increasing range
   @callback append(any(), [entry()]) :: any()
   @callback rewind(any(), index :: integer()) :: any() # remove all long entries after index
   @callback truncate(any(), index :: integer(), SnapshotEntry.t()) :: any() # atomically remove log entries up to and including `index` and replace with SnapshotEntry
   @callback reverse_find(any(), fun()) :: entry() | nil
   @callback reduce_while(any(), any(), fun()) :: any()
-  @callback put_metadata(any(), binary()) :: any()
+  @callback put_metadata(any(), struct()) :: any()
   @callback fetch_metadata(any()) :: {:ok, binary()} | :error
+
+  # write_buffer should also write write the metadata out:
+  # lease needs to be fsync'd with every AppendEntries, fsyncs are expensive, this adds it to the append buffer so we only have to do one:
+  # 1. on the leader when it exteneds its lease before a heartbeat
+  # 2. on a follower when it updates the lease as part of AppendEntries receipt
+  @callback buffer_append(any(), entry()) :: {any(), index :: integer()}
+  @callback buffer_rewind(any(), index :: integer()) :: any()
+  @callback buffer_metadata_put(any(), metadata :: struct()) :: any()
+  @callback commit_buffer(any()) :: any()
+  @callback release_buffer(any()) :: any()
+
   @callback dump(any()) :: any()
   @callback length(any()) :: pos_integer()
   @callback backup(any(), Path.t()) :: :ok | {:error, any()}
@@ -51,7 +60,6 @@ defmodule Craft.Persistence do
 
   defmodule Metadata do
     alias Craft.Consensus.State
-    alias Craft.Persistence
 
     defstruct [
       :current_term,
@@ -59,44 +67,41 @@ defmodule Craft.Persistence do
       :lease_expires_at
     ]
 
-    def init(%State{} = state) do
-      write(%__MODULE__{}, state)
+    def new(%State{} = state) do
+      %{
+        current_term: state.current_term,
+        voted_for: state.voted_for,
+        lease_expires_at: state.lease_expires_at
+      }
     end
 
-    def fetch(%Persistence{module: module, private: private}) do
-      module.fetch_metadata(private)
+    def load(%State{} = state) do
+      case state.persistence.module.fetch_metadata(state.persistence.private) do
+        {:ok, %__MODULE__{} = metadata} ->
+          %{
+            state |
+              current_term: metadata.current_term,
+              voted_for: metadata.voted_for,
+              lease_expires_at: metadata.lease_expires_at
+          }
+
+        :error ->
+          state
+      end
     end
 
-    # TODO: don't update metadata as a monolithic blob, update per-key, it'll be faster
-    # like `update(state, key, value)``
-    def update(%State{} = state) do
-      get_and_update(state, fn metadata ->
-        %{
-          metadata |
-          current_term: state.current_term,
-          voted_for: state.voted_for,
-          lease_expires_at: state.lease_expires_at
-        }
-      end)
+    def write(%State{} = state) do
+      put_in(
+        state.persistence.private,
+        state.persistence.module.put_metadata(state.persistence.private, new(state))
+      )
     end
 
-    defp get_and_update(%State{persistence: persistence} = state, fun) do
-      metadata =
-        case fetch(persistence) do
-          {:ok, metadata} ->
-            metadata
-
-          :error ->
-            raise "couldn't fetch metadata"
-        end
-
-      metadata
-      |> fun.()
-      |> write(state)
-    end
-
-    defp write(metadata, %State{persistence: %Persistence{module: module, private: private}} = state) do
-      put_in(state.persistence.private, module.put_metadata(private, metadata))
+    def buffer_put(%State{} = state) do
+      put_in(
+        state.persistence.private,
+        state.persistence.module.buffer_metadata_put(state.persistence.private, new(state))
+      )
     end
   end
 
@@ -143,26 +148,35 @@ defmodule Craft.Persistence do
     module.fetch_from(private, index)
   end
 
-  def add_to_append_buffer(%__MODULE__{module: module, private: private} = persistence, entry) do
-    {private, index} = module.add_to_append_buffer(private, entry)
+  def fetch_between(%__MODULE__{module: module, private: private}, index_range) do
+    module.fetch_between(private, index_range)
+  end
+
+  def buffer_append(%__MODULE__{module: module, private: private} = persistence, entry) do
+    {private, index} = module.buffer_append(private, entry)
 
     {%{persistence | private: private}, index}
   end
 
-  def write_append_buffer(%__MODULE__{module: module, private: private} = persistence) do
-    %{persistence | private: module.write_append_buffer(private)}
+  def buffer_rewind(%__MODULE__{module: module, private: private} = persistence, index) do
+    %{persistence | private: module.buffer_rewind(private, index)}
   end
 
-  def release_append_buffer(%__MODULE__{module: module, private: private} = persistence) do
-    %{persistence | private: module.release_append_buffer(private)}
+  def buffer_metadata_put(%__MODULE__{module: module, private: private} = persistence, metadata) do
+    %{persistence | private: module.buffer_metadata_put(private, metadata)}
   end
 
-  # FIXME: rename to append!
-  def append(persistence, entries)
-  def append(%__MODULE__{module: module, private: private} = persistence, entries) when is_list(entries) do
-    %{persistence | private: module.append(private, entries)}
+  def commit_buffer(%__MODULE__{module: module, private: private} = persistence) do
+    %{persistence | private: module.commit_buffer(private)}
   end
-  def append(persistence, entry), do: append(persistence, [entry])
+
+  def release_buffer(%__MODULE__{module: module, private: private} = persistence) do
+    %{persistence | private: module.release_buffer(private)}
+  end
+
+  def append(%__MODULE__{module: module, private: private} = persistence, entry) do
+    %{persistence | private: module.append(private, entry)}
+  end
 
   def rewind(%__MODULE__{module: module, private: private} = persistence, index) do
     %{persistence | private: module.rewind(private, index)}

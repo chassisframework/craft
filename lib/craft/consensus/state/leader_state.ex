@@ -143,11 +143,19 @@ defmodule Craft.Consensus.State.LeaderState do
       # snapshotting truncates the log, so we want to make sure that all followers are caught up first
       # we don't want to delete a snapshot that's being downloaded, nor truncate the log before a follower
       # that's just pulled a snapshot can catch up
-      all_followers_caught_up = Enum.empty?(state.members.catching_up_nodes)
+      voting_nodes_caught_up =
+        state.members
+        |> Members.other_voting_nodes()
+        |> Enum.all?(fn node ->
+          state.leader_state.match_indices[node] == Persistence.latest_index(state.persistence)
+        end)
+
+      all_followers_caught_up = Enum.empty?(state.members.catching_up_nodes)# and voting_nodes_caught_up
       log_too_long = Persistence.length(state.persistence) > Application.get_env(:craft, :maximum_log_length, 10_000)
       # log_too_big = Persistence.log_size() > 100mb or 100 entries, etc
 
-      Machine.quorum_reached(state, all_followers_caught_up && log_too_long)
+      Machine.quorum_reached(state, false)
+      # Machine.quorum_reached(state, all_followers_caught_up && log_too_long)
     end
 
     state
@@ -249,7 +257,7 @@ defmodule Craft.Consensus.State.LeaderState do
   end
 
   def needs_snapshot?(%State{} = state, node) do
-    not match?({:ok, _}, Persistence.fetch(state.persistence, state.leader_state.next_indices[node] - 1))
+    state.machine.__craft_mutable__() and not match?({:ok, _}, Persistence.fetch(state.persistence, state.leader_state.next_indices[node] - 1))
   end
 
   def sending_snapshot?(%State{} = state, node) do

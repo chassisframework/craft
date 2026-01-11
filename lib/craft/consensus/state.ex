@@ -58,28 +58,15 @@ defmodule Craft.Consensus.State do
         end
       end
 
-    state =
-      %__MODULE__{
-        name: name,
-        members: members,
-        persistence: persistence,
-        machine: machine,
-        global_clock: global_clock,
-        nexus_pid: nexus_pid
-      }
-
-    case Metadata.fetch(persistence) do
-      {:ok, %Metadata{} = metadata} ->
-        %{
-          state |
-          current_term: metadata.current_term,
-          voted_for: metadata.voted_for,
-          lease_expires_at: metadata.lease_expires_at
-        }
-
-      :error ->
-        Metadata.init(state)
-    end
+    %__MODULE__{
+      name: name,
+      members: members,
+      persistence: persistence,
+      machine: machine,
+      global_clock: global_clock,
+      nexus_pid: nexus_pid
+    }
+    |> Metadata.load()
   end
 
   def set_current_term(%__MODULE__{} = state, new_current_term, voted_for \\ nil) do
@@ -90,17 +77,7 @@ defmodule Craft.Consensus.State do
         voted_for: voted_for
       }
 
-    Metadata.update(state)
-
-    state
-  end
-
-  def set_lease_expires_at(%__MODULE__{} = state, lease_expires_at) do
-    state = %{state | lease_expires_at: lease_expires_at}
-
-    Metadata.update(state)
-
-    state
+    Metadata.write(state)
   end
 
   def become_lonely(%__MODULE__{} = state, new_current_term) do
@@ -118,7 +95,7 @@ defmodule Craft.Consensus.State do
       leadership_transfer_request_id: nil,
       election: Election.new(state.members)
     }
-    |> release_append_buffer()
+    |> release_buffer()
   end
 
   def become_follower(%__MODULE__{} = state) do
@@ -129,7 +106,7 @@ defmodule Craft.Consensus.State do
       leadership_transfer_request_id: nil,
       election: nil
     }
-    |> release_append_buffer()
+    |> release_buffer()
   end
 
   def become_receiving_snapshot(%__MODULE__{} = state) do
@@ -140,7 +117,7 @@ defmodule Craft.Consensus.State do
       leadership_transfer_request_id: nil,
       election: nil
     }
-    |> release_append_buffer()
+    |> release_buffer()
   end
 
   # leadership_transfer_request_id set directly in Consensus
@@ -153,7 +130,7 @@ defmodule Craft.Consensus.State do
       election: Election.new(state.members),
     }
     |> set_current_term(state.current_term + 1, node())
-    |> release_append_buffer()
+    |> release_buffer()
   end
 
   # the leader buffers log entry and writes them in batches
@@ -168,8 +145,8 @@ defmodule Craft.Consensus.State do
     |> set_current_term(state.current_term)
   end
 
-  defp release_append_buffer(%__MODULE__{} = state) do
-    %{state | persistence: Persistence.release_append_buffer(state.persistence)}
+  defp release_buffer(%__MODULE__{} = state) do
+    %{state | persistence: Persistence.release_buffer(state.persistence)}
   end
 
   # voting for others

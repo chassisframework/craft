@@ -83,7 +83,9 @@ defmodule Craft.NexusCase do
 
     @impl true
     def handle_cast({:test_finished, %ExUnit.Test{state: {:failed, _}} = test}, state) do
-      visualize(state, test)
+      if test.tags.registered[:test_id] do
+        visualize(state, test)
+      end
 
       {:noreply, state}
     end
@@ -92,7 +94,9 @@ defmodule Craft.NexusCase do
     def handle_cast({:test_finished, %ExUnit.Test{state: {:excluded, _}}}, state), do: {:noreply, state}
 
     def handle_cast({:test_finished, %ExUnit.Test{tags: %{visualize: true}} = test}, state) do
-      visualize(state, test)
+      if test.tags.registered[:test_id] do
+        visualize(state, test)
+      end
 
       {:noreply, state}
     end

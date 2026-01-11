@@ -13,10 +13,13 @@ config :logger, :default_formatter,
 
 config :craft, :snapshot_server_port, 1337
 
+# basic flow control, pending dynamic solution
+config :craft, :maximum_log_entries_per_heartbeat, 200
+
 # max log length before a compaction snapshot is triggered
 config :craft, :maximum_log_length, 10_000
 
-heartbeat_interval = 50 #ms
+heartbeat_interval = 30 # ms
 config :craft, :heartbeat_interval, heartbeat_interval
 
 # max time in the past within which leader must have a successful quorum, or it'll step down

@@ -95,9 +95,7 @@ defmodule Craft do
   def discover(name, nodes), do: backend().discover(name, nodes)
 
   @doc """
-  Indicates, for the given group, if this node:
-    1. holds the lease, and
-    2. the user's machine is 'caught up' after an election
+  Indicates, for the given group, if this node holds the lease.
 
   This function is intended to extend craft's linearizabiliy guarantees to processes outside of the user's state machine when used with leader_ready?/1.
   """

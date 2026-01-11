@@ -7,7 +7,6 @@ defmodule Craft.Machine do
   alias Craft.Consensus.State, as: ConsensusState
   alias Craft.GlobalTimestamp
   alias Craft.Log.CommandEntry
-  alias Craft.Log.EmptyEntry
   alias Craft.Log.MembershipEntry
   alias Craft.Log.SnapshotEntry
   alias Craft.MemberCache
@@ -26,13 +25,12 @@ defmodule Craft.Machine do
   @type reply_from :: {:direct, GenServer.from()} | {:quorum, query_time :: integer(), pid(), GenServer.from()}
 
   @callback init(Craft.group_name()) :: {:ok, private()}
-  @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
-  @callback handle_commands([{Craft.command(), Craft.log_index()}], private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
   @callback handle_query(Craft.query(), reply_from(), private()) :: {:reply, Craft.reply()} | :noreply
   @callback handle_role_change(role(), private()) :: private()
   @callback handle_lease_taken(private()) :: private()
   @callback handle_info(term(), private()) :: private()
-  @optional_callbacks handle_role_change: 2, handle_lease_taken: 1, handle_info: 2, handle_command: 3, handle_commands: 2
+
+  @optional_callbacks handle_role_change: 2, handle_lease_taken: 1, handle_info: 2
 
   defmodule MutableMachine do
     @type private() :: Craft.Machine.private()
@@ -46,6 +44,33 @@ defmodule Craft.Machine do
     @callback prepare_to_receive_snapshot(private()) :: {:ok, data_dir(), private()}
     @callback receive_snapshot(private()) :: {:ok, private()}
     @callback backup(to_directory :: Path.t(), private()) :: :ok | {:error, any()}
+  end
+
+  defmodule NormalMachine do
+    @type private() :: Craft.Machine.private()
+
+    @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
+    @callback handle_commands([{Craft.command(), Craft.log_index()}], private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
+
+    @optional_callbacks handle_command: 3, handle_commands: 2
+  end
+
+  defmodule WriteOptimizedMachine do
+    @moduledoc """
+    A write-optimized machine defers execution of commands until they're needed, or the system enters a quiescent period.
+
+    - Commands must only return `:ok`.
+    - You must use `Craft.leader_ready?/1` in non-Craft components to ensure linearizability
+
+    This mode takes the user's state machine out of the write path and makes it just-in-time. It essentially turns Craft into a write-ahead log, with latent command execution,
+    hence why commands may only return `:ok`, indicating that replication via quorum has taken place, but not command execution.
+    """
+    @type private() :: Craft.Machine.private()
+
+    @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {:ok, private()}
+    @callback handle_commands([{Craft.command(), Craft.log_index()}], private()) :: {:ok, private()}
+
+    @optional_callbacks handle_command: 3, handle_commands: 2
   end
 
   defmodule LogStoredMachine do
@@ -65,6 +90,7 @@ defmodule Craft.Machine do
       :global_clock,
       :lease_expires_at,
       :last_quorum_at,
+      commit_index: 0,
       # we need to wait for the section 5.4.2 entry to commit before servicing client requests
       # boolean | {:waiting, log_index}
       waiting_for_first_commit: true,
@@ -261,6 +287,22 @@ defmodule Craft.Machine do
       {"quorum reached", logger_metadata(trace: {:quorum_reached, metadata})}
     end)
 
+    entries_since_last_commit = entries_by_type(log, state.commit_index+1..new_commit_index//1)
+
+    state =
+      Enum.reduce(entries_since_last_commit[MembershipEntry] || [], state, fn {index, _entry}, state ->
+        reply_to_command(state, index, :ok)
+      end)
+
+    state =
+      if state.module.__craft_write_optimized__() do
+        Enum.reduce(entries_since_last_commit[CommandEntry] || [], state, fn {index, _entry}, state ->
+          reply_to_command(state, index, :ok)
+        end)
+      else
+        apply_commands(state, unapplied_entries_by_type(state, log)[CommandEntry] || [])
+      end
+
     # answer client queries
     state =
       if state.role == :leader do
@@ -281,74 +323,6 @@ defmodule Craft.Machine do
       else
         state
       end
-
-    # possible optimization opportunity: batch fetch
-    entries =
-      Enum.map(state.last_applied+1..new_commit_index//1, fn index ->
-        {:ok, entry} = Persistence.fetch(log, index)
-
-        {index, entry}
-      end)
-
-    # apply machine commands
-    state =
-      if function_exported?(state.module, :handle_commands, 2) do
-        entries_by_type = Enum.group_by(entries, fn {_index, entry} -> entry.__struct__ end)
-
-        # we don't guarantee linearizability between membership changes and commands, so they're handled out-of-order here
-        state =
-          Enum.reduce(entries_by_type[MembershipEntry] || [], state, fn {index, _entry}, state ->
-            reply_to_command(state, index, :ok)
-          end)
-
-        case entries_by_type[CommandEntry] do
-          [_ | _] ->
-            {replies, private} =
-              entries_by_type[CommandEntry]
-              |> Enum.map(fn {index, entry} -> {entry.command, index} end)
-              |> state.module.handle_commands(state.private)
-
-            state = %{state | private: private}
-
-            entries_by_type[CommandEntry]
-            |> Enum.zip(replies)
-            |> Enum.reduce(state, fn {{index, _entry}, reply}, state ->
-              reply_to_command(state, index, reply)
-            end)
-
-          _ ->
-            state
-        end
-      else
-        Enum.reduce(entries, state, fn
-          {_index, %EmptyEntry{}}, state ->
-            state
-
-          {index, %MembershipEntry{}}, state ->
-            reply_to_command(state, index, :ok)
-
-          {index, %CommandEntry{command: command} = entry}, state ->
-            Logger.debug("applying command entry", logger_metadata(trace: {:applying_command, entry}))
-
-            {reply, private} =
-              case state.module.handle_command(command, index, state.private) do
-                {reply, private} ->
-                  {reply, private}
-
-                # {reply, side_effects, private} ->
-                #   if state.role == :leader do
-                #     Enum.each(side_effects, fn {m, f, a} ->
-                #       spawn(fn -> apply(m, f, a) end)
-                #     end)
-                #   end
-
-                #   {reply, private}
-              end
-
-            reply_to_command(%{state | private: private}, index, reply)
-        end)
-      end
-
 
     # update leader-readiness if user's state machine has caught up post-election.
     state =
@@ -410,7 +384,7 @@ defmodule Craft.Machine do
         state.private
       end
 
-    {:noreply, %{state | last_applied: new_commit_index, private: private, last_quorum_at: last_quorum_at}}
+    {:noreply, %{state | private: private, last_quorum_at: last_quorum_at, commit_index: new_commit_index}}
   end
 
   #
@@ -686,6 +660,62 @@ defmodule Craft.Machine do
     {:noreply, %{state | private: private}}
   end
 
+  defp apply_commands(state, []), do: state
+  defp apply_commands(state, entries) do
+    state =
+      if function_exported?(state.module, :handle_commands, 2) do
+        Logger.debug("applying batch commands", logger_metadata(trace: {:applying_commands, entries}))
+
+        {replies, private} =
+          entries
+          |> Enum.map(fn {index, entry} -> {entry.command, index} end)
+          |> state.module.handle_commands(state.private)
+
+        state = %{state | private: private}
+
+        # if the machine is write-optimized, we've already replied
+        if not state.module.__craft_write_optimized__() do
+          entries
+          |> Enum.zip(replies)
+          |> Enum.reduce(state, fn {{index, _entry}, reply}, state ->
+            reply_to_command(state, index, reply)
+          end)
+        else
+          state
+        end
+      else
+        Enum.reduce(entries, state, fn {index, entry}, state ->
+          Logger.debug("applying command entry", logger_metadata(trace: {:applying_command, entry}))
+
+          {reply, private} =
+            case state.module.handle_command(entry.command, index, state.private) do
+              {reply, private} ->
+                {reply, private}
+
+                # {reply, side_effects, private} ->
+                #   if state.role == :leader do
+                #     Enum.each(side_effects, fn {m, f, a} ->
+                #       spawn(fn -> apply(m, f, a) end)
+                #     end)
+                #   end
+
+                #   {reply, private}
+            end
+
+          state = %{state | private: private}
+
+          if not state.module.__craft_write_optimized__() do
+            reply_to_command(state, index, reply)
+          else
+            state
+          end
+        end)
+      end
+ 
+    {last_applied, _} = List.last(entries)
+    %{state | last_applied: last_applied}
+  end
+
   defp reply_to_command(state, index, reply) do
     with :leader <- state.role,
          {{from, async_caller}, client_commands} <- Map.pop(state.client_commands, index) do
@@ -702,6 +732,20 @@ defmodule Craft.Machine do
       _ ->
         state
     end
+  end
+
+  defp unapplied_entries_by_type(state, log) do
+    entries_by_type(log, state.last_applied+1..state.commit_index//1)
+  end
+
+  defp entries_by_type(log, index_range) do
+    entries =
+      Enum.zip(
+        index_range,
+        Persistence.fetch_between(log, index_range)
+      )
+
+    Enum.group_by(entries, fn {_index, entry} -> entry.__struct__ end)
   end
 
   defp snapshot_info(path) do
@@ -744,15 +788,25 @@ defmodule Craft.Machine do
 
   defmacro __using__(opts) do
     mutable = !!Keyword.fetch!(opts, :mutable)
+    write_optimized = !!opts[:write_optimized]
 
     quote do
       @behaviour Craft.Machine
+
       if unquote(mutable) do
         @behaviour MutableMachine
       else
         @behaviour LogStoredMachine
       end
+
+      if unquote(write_optimized) do
+        @behaviour WriteOptimizedMachine
+      else
+        @behaviour NormalMachine
+      end
+
       def __craft_mutable__(), do: unquote(mutable)
+      def __craft_write_optimized__(), do: unquote(write_optimized)
     end
   end
 end

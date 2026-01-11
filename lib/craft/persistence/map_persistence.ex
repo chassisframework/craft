@@ -45,6 +45,15 @@ defmodule Craft.Persistence.MapPersistence do
   end
 
   @impl true
+  def fetch_between(state, index_range) do
+    Enum.map(index_range, fn index ->
+      {:ok, entry} = fetch(state, index)
+
+      entry
+    end)
+  end
+
+  @impl true
   def append(state, []), do: state
 
   def append(state, [entry | rest]) do

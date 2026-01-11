@@ -15,7 +15,15 @@ defmodule Craft.Persistence.RocksDBPersistence do
   @log_column_family {~c"log", []}
   @metadata_column_family {~c"metadata", []}
 
-  defmodule AppendBuffer, do: defstruct [:batch, :index, :term, empty?: true]
+  defmodule WriteBuffer do
+    defstruct [:batch, :index]
+
+    def new(state) do
+      {:ok, batch} = :rocksdb.batch()
+
+      %__MODULE__{batch: batch, index: state.latest_index}
+    end
+  end
 
   defstruct [
     :db,
@@ -24,7 +32,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
     :latest_index,
     :latest_term,
     :write_opts,
-    :append_buffer
+    :write_buffer
   ]
 
   @impl true
@@ -80,117 +88,90 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
   @impl true
   def fetch_from(%__MODULE__{} = state, index) do
-    state
-    |> do_fetch_from(index, [])
-    |> Enum.reverse()
-  end
-
-  defp do_fetch_from(state, index, acc) do
-    case fetch(state, index) do
-      {:ok, entry} ->
-        do_fetch_from(state, index + 1, [entry | acc])
-
-      :error ->
-        acc
-    end
+    fetch_between(state, index..state.latest_index//1)
   end
 
   @impl true
-  def add_to_append_buffer(%__MODULE__{} = state, entry) do
-    append_buffer =
-      if !state.append_buffer do
-        {:ok, batch} = :rocksdb.batch()
+  def fetch_between(%__MODULE__{} = state, index_range) do
+    keys = Enum.map(index_range, &encode/1)
 
-        %AppendBuffer{batch: batch, index: state.latest_index}
-      else
-        state.append_buffer
-      end
+    :rocksdb.multi_get(state.db, state.log_cf, keys, [])
+    |> Enum.map(fn {:ok, entry} -> decode(entry) end)
+  end
 
-    index = append_buffer.index + 1
-    :ok = :rocksdb.batch_put(append_buffer.batch, state.log_cf, encode(index), encode(entry))
+  @impl true
+  def buffer_append(%__MODULE__{} = state, %_struct{} = entry) do
+    write_buffer = state.write_buffer || WriteBuffer.new(state)
+    state = %{state | write_buffer: write_buffer}
+
+    index = write_buffer.index + 1
+    :ok = :rocksdb.batch_put(write_buffer.batch, state.log_cf, encode(index), encode(entry))
 
     Logger.debug("appended log entry to batch", logger_metadata(trace: {:appended, [entry]}))
 
-    append_buffer = %{append_buffer | index: index, term: entry.term, empty?: false}
-
-    {%{state | append_buffer: append_buffer}, index}
+    {put_in(state.write_buffer.index, index), index}
   end
 
   @impl true
-  def write_append_buffer(%__MODULE__{} = state) do
-    if state.append_buffer && !state.append_buffer.empty? do
-      :ok = :rocksdb.write_batch(state.db, state.append_buffer.batch, state.write_opts)
+  def buffer_rewind(%__MODULE__{} = state, index) do
+    write_buffer = state.write_buffer || WriteBuffer.new(state)
+    state = %{state | write_buffer: write_buffer}
 
-      %{release_append_buffer(state)| latest_index: state.append_buffer.index, latest_term: state.append_buffer.term}
+    end_index = max(state.latest_index, write_buffer.index)
+
+    Enum.each(index+1..end_index//1, fn index ->
+      :ok = :rocksdb.batch_delete(write_buffer.batch, state.log_cf, encode(index))
+    end)
+
+    put_in(state.write_buffer.index, index)
+  end
+
+  @impl true
+  def buffer_metadata_put(%__MODULE__{} = state, metadata) do
+    write_buffer = state.write_buffer || WriteBuffer.new(state)
+    state = %{state | write_buffer: write_buffer}
+
+    :ok = :rocksdb.batch_put(write_buffer.batch, state.metadata_cf, "metadata", encode(metadata))
+
+    state
+  end
+
+  @impl true
+  def commit_buffer(%__MODULE__{} = state) do
+    if state.write_buffer do
+      :ok = :rocksdb.write_batch(state.db, state.write_buffer.batch, state.write_opts)
+
+      # TODO: better log
+      Logger.debug("wrote batch log entries", logger_metadata(trace: :wrote_batch))
+
+      state
+      |> release_buffer()
+      |> set_latest_index_and_term()
     else
       state
     end
   end
 
   @impl true
-  def release_append_buffer(%__MODULE__{append_buffer: nil} = state), do: state
-  def release_append_buffer(%__MODULE__{} = state) do
-    :ok = :rocksdb.release_batch(state.append_buffer.batch)
+  def release_buffer(%__MODULE__{write_buffer: nil} = state), do: state
+  def release_buffer(%__MODULE__{} = state) do
+    :ok = :rocksdb.release_batch(state.write_buffer.batch)
 
-    %{state | append_buffer: nil}
-  end
-
-  # if an append buffer exists, we need to flush it first (append buffer has already decided on index numbers, which would break if we didn't flush first)
-  # only the leader holds and append buffer
-  @impl true
-  def append(%__MODULE__{} = state, []), do: state
-  def append(%__MODULE__{} = state, entries) do
-    state = write_append_buffer(state)
-
-    {:ok, batch} = :rocksdb.batch()
-
-    state =
-      Enum.reduce(entries, state, fn entry, state ->
-        index = state.latest_index + 1
-        :ok = :rocksdb.batch_put(batch, state.log_cf, encode(index), encode(entry))
-
-        %{state | latest_index: index}
-      end)
-
-    :ok = :rocksdb.write_batch(state.db, batch, state.write_opts)
-    :ok = :rocksdb.release_batch(batch)
-
-    Logger.debug("appended #{Enum.count(entries)} log entries", logger_metadata(trace: {:appended, entries}))
-
-    %{state | latest_term: List.last(entries).term}
+    %{state | write_buffer: nil}
   end
 
   @impl true
-  def rewind(%__MODULE__{latest_index: latest_index} = state, index) when index < latest_index do
-    {:ok, transaction} = :rocksdb.transaction(state.db, state.write_opts)
-    {:ok, iterator} = :rocksdb.transaction_iterator(transaction, state.log_cf, [])
+  def append(%__MODULE__{} = state, %_struct{} = entry) do
+    {state, _index} = buffer_append(state, entry)
 
-    do_rewind(transaction, iterator, state.log_cf, encode(index))
+    commit_buffer(state)
+  end
 
-    :ok = :rocksdb.transaction_commit(transaction)
-
-    old_latest_index = state.latest_index
-    state = set_latest_index_and_term(state)
-
-    Logger.debug(fn ->
-      num_entries = old_latest_index - state.latest_index
-
-      {"rewound #{num_entries} log entries", logger_metadata(trace: {:rewound_log, num_entries})}
-    end)
-
+  @impl true
+  def rewind(%__MODULE__{} = state, index) do
     state
-  end
-  def rewind(%__MODULE__{} = state, _index), do: state
-
-  defp do_rewind(transaction, iterator, log_cf, min_index) do
-    case :rocksdb.iterator_move(iterator, :last) do
-      {:ok, index, _value} when index > min_index ->
-        :ok = :rocksdb.transaction_delete(transaction, log_cf, index)
-        do_rewind(transaction, iterator, log_cf, min_index)
-
-      {:ok, _index, _value} ->
-        :ok
-    end
+    |> buffer_rewind(index)
+    |> commit_buffer()
   end
 
   @impl true
@@ -276,19 +257,14 @@ defmodule Craft.Persistence.RocksDBPersistence do
     {:ok, last_index, _} = :rocksdb.iterator_move(iterator, :last)
     :ok = :rocksdb.iterator_close(iterator)
 
-    decode(last_index) - decode(first_index)
+    decode(last_index) - decode(first_index) + 1
   end
 
   @impl true
   def put_metadata(%__MODULE__{} = state, metadata) do
-    dumped =
-      metadata
-      |> Map.from_struct()
-      |> encode()
-
-    :ok = :rocksdb.put(state.db, state.metadata_cf, "metadata", dumped, state.write_opts)
-
     state
+    |> buffer_metadata_put(metadata)
+    |> commit_buffer()
   end
 
   @impl true
@@ -319,38 +295,43 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
   @impl true
   def dump(%__MODULE__{} = state) do
-    Enum.flat_map([state.metadata_cf, state.log_cf], fn cf ->
-      {:ok, iterator} = :rocksdb.iterator(state.db, cf, [])
-      {:ok, index, value} = :rocksdb.iterator_move(iterator, :first)
+    %{
+      log: do_dump(state.db, state.log_cf),
+      metadata: do_dump(state.db, state.metadata_cf)
+    }
+  end
 
-      Stream.repeatedly(fn ->
-        case :rocksdb.iterator_move(iterator, :next) do
-          {:ok, index, value} ->
-            {index, value}
+  defp do_dump(db, cf) do
+    {:ok, iterator} = :rocksdb.iterator(db, cf, [])
+    {:ok, index, value} = :rocksdb.iterator_move(iterator, :first)
 
-          _ ->
-            :ok = :rocksdb.iterator_close(iterator)
-            :eof
-        end
-      end)
-      |> Stream.take_while(fn
-        :eof ->
-          false
+    Stream.repeatedly(fn ->
+      case :rocksdb.iterator_move(iterator, :next) do
+        {:ok, index, value} ->
+          {index, value}
 
         _ ->
-          true
-      end)
-      |> Enum.concat([{index, value}])
-      |> Enum.map(fn {k, v} ->
-        try do
-          {decode(k), decode(v)}
-        rescue
-          _ ->
-            {k, decode(v)}
-        end
-      end)
-      |> Enum.sort()
+          :ok = :rocksdb.iterator_close(iterator)
+          :eof
+      end
     end)
+    |> Stream.take_while(fn
+      :eof ->
+        false
+
+      _ ->
+        true
+    end)
+    |> Enum.concat([{index, value}])
+    |> Enum.map(fn {k, v} ->
+      try do
+        {decode(k), decode(v)}
+      rescue
+        _ ->
+          {k, decode(v)}
+      end
+    end)
+    |> Enum.sort()
   end
 
   defp encode(term), do: :erlang.term_to_binary(term)
@@ -364,7 +345,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
         {decode(index), decode(entry).term}
       else
         {:error, :invalid_iterator} ->
-          {-1, -1}
+          {0, -1}
       end
 
     %{state | latest_index: latest_index, latest_term: latest_term}
