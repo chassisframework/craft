@@ -172,6 +172,16 @@ defmodule Craft.Machine do
     # nil if not leader
     last_quorum_at = get_in(state.leader_state.quorum_status.latest_successful_round_sent_at)
 
+    # Update lease in ETS immediately, bypassing the Machine process mailbox queue.
+    # This prevents lease expiration when the Machine process is busy processing queries.
+    # The mailbox can become backed up during high query load (e.g., mass hydration),
+    # causing delays before the Machine processes the cast.
+    # By updating ETS directly here, queries can see the fresh lease immediately
+    if lease_expires_at do
+      :ets.update_element(MemberCache, state.name,
+        {2, {node(), state.global_clock, lease_expires_at}})
+    end
+
     state.name
     |> lookup(__MODULE__)
     |> GenServer.cast({:quorum_reached, state.commit_index, state.persistence, should_snapshot?, lease_expires_at, last_quorum_at})
@@ -407,8 +417,8 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
-    with %GlobalTimestamp{} <- state.lease_expires_at,
-         {:ok, lease_time} when lease_time > 0 <- GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) do
+    # MemberCache.holding_lease uses the ETS table directly instead of the state.lease_expires_at which can be stale
+    if MemberCache.holding_lease?(state.name) do
       Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
       case state.module.handle_query(query, {:direct, from}, state.private) do
@@ -429,7 +439,7 @@ defmodule Craft.Machine do
 
     query_time = :erlang.monotonic_time(:millisecond)
 
-    state = 
+    state =
       case state.module.handle_query(query, {:quorum, query_time, self(), from}, state.private) do
         {:reply, reply} ->
           %{state | client_query_results: [{from, reply} | state.client_query_results]}
@@ -711,7 +721,7 @@ defmodule Craft.Machine do
           end
         end)
       end
- 
+
     {last_applied, _} = List.last(entries)
     %{state | last_applied: last_applied}
   end
