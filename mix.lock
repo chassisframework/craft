@@ -1,3 +1,3 @@
 %{
-  "rocksdb": {:git, "https://github.com/EnkiMultimedia/erlang-rocksdb.git", "4c09b8e3a88b664621c92e4c5dd6ddcb3fcd1cbf", []},
+  "rocksdb": {:hex, :rocksdb, "2.5.0", "955b15af1d9a23545c7f72a848d0b45b8c6e32202c036bbe85f8af54987546d3", [:rebar3], [], "hexpm", "c3998f61c4077dcd0d1b24b67469279209dac7a1e9ba2cf6215ddfa331015803"},
 }

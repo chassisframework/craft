@@ -561,12 +561,11 @@ defmodule Craft.Consensus do
     Message.respond_append_entries(append_entries, success, data)
 
     if success && data.commit_index > old_commit_index do
-      log_too_long = Persistence.length(data.persistence) > Application.get_env(:craft, :maximum_log_length, 10_000)
+      log_too_long = Persistence.length(data.persistence) > Application.get_env(:craft, :maximum_log_length, 100_000)
 
       Logger.debug("quorum reached", logger_metadata(data, trace: :quorum_reached))
 
-      Machine.quorum_reached(data, false)
-      # Machine.quorum_reached(data, log_too_long)
+      Machine.quorum_reached(data, log_too_long)
     end
 
     MemberCache.update(data)

@@ -130,7 +130,7 @@ defmodule Craft.RocksDBMachine do
 
       :ok = :rocksdb.checkpoint(state.db, :erlang.binary_to_list(path))
 
-      {last_applied_log_index(state), path, state}
+      {last_applied_log_index(state), path}
     else
       nil
     end

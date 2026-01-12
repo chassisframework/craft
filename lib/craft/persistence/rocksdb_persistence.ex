@@ -29,6 +29,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
     :db,
     :log_cf,
     :metadata_cf,
+    :earliest_index,
     :latest_index,
     :latest_term,
     :write_opts,
@@ -56,7 +57,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
     {:ok, db, [_default, log_column_family_handle, metadata_column_family_handle]} =
       data_dir
       |> :erlang.binary_to_list()
-      |> :rocksdb.open_optimistic_transaction_db(db_opts, [{~c"default", []}, @log_column_family, @metadata_column_family])
+      |> :rocksdb.open(db_opts, [{~c"default", []}, @log_column_family, @metadata_column_family])
 
     %__MODULE__{
       db: db,
@@ -64,7 +65,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
       metadata_cf: metadata_column_family_handle,
       write_opts: write_opts
     }
-    |> set_latest_index_and_term()
+    |> cache_index_and_term_bounds()
   end
 
   defp log_dir(base), do: Path.join(base, "log")
@@ -146,7 +147,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
       state
       |> release_buffer()
-      |> set_latest_index_and_term()
+      |> cache_index_and_term_bounds()
     else
       state
     end
@@ -175,23 +176,16 @@ defmodule Craft.Persistence.RocksDBPersistence do
   end
 
   @impl true
-  # the current version of rocksdb-erlang doesn't support delete_range in transactions,
-  # so we have to explicitly enumerate in order to maintain atomicity with the snapshot_entry insertion
-  #
-  # https://github.com/facebook/rocksdb/issues/4812
   def truncate(%__MODULE__{} = state, index, snapshot_entry) do
-    {:ok, transaction} = :rocksdb.transaction(state.db, state.write_opts)
-    {:ok, iterator} = :rocksdb.transaction_iterator(transaction, state.log_cf, [])
-    {:ok, first_index, _value} = :rocksdb.iterator_move(iterator, :first)
+    index = encode(index)
 
-    for i <- decode(first_index)..index do
-      :ok = :rocksdb.transaction_delete(transaction, state.log_cf, encode(i))
-    end
+    {:ok, batch} = :rocksdb.batch()
+    :ok = :rocksdb.batch_delete_range(batch, state.log_cf, encode(state.earliest_index), index)
+    :ok = :rocksdb.batch_put(batch, state.log_cf, index, encode(snapshot_entry))
+    :ok = :rocksdb.write_batch(state.db, batch, state.write_opts)
+    :ok = :rocksdb.release_batch(batch)
 
-    :ok = :rocksdb.transaction_put(transaction, state.log_cf, encode(index), encode(snapshot_entry))
-    :ok = :rocksdb.transaction_commit(transaction)
-
-    set_latest_index_and_term(state)
+    cache_index_and_term_bounds(state)
   end
 
   @impl true
@@ -252,12 +246,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
   @impl true
   def length(%__MODULE__{} = state) do
-    {:ok, iterator} = :rocksdb.iterator(state.db, state.log_cf, [])
-    {:ok, first_index, _} = :rocksdb.iterator_move(iterator, :first)
-    {:ok, last_index, _} = :rocksdb.iterator_move(iterator, :last)
-    :ok = :rocksdb.iterator_close(iterator)
-
-    decode(last_index) - decode(first_index) + 1
+    state.latest_index - state.earliest_index + 1
   end
 
   @impl true
@@ -337,17 +326,18 @@ defmodule Craft.Persistence.RocksDBPersistence do
   defp encode(term), do: :erlang.term_to_binary(term)
   defp decode(binary), do: :erlang.binary_to_term(binary)
 
-  defp set_latest_index_and_term(%__MODULE__{} = state) do
-    {latest_index, latest_term} =
+  defp cache_index_and_term_bounds(%__MODULE__{} = state) do
+    {earliest_index, latest_index, latest_term} =
       with {:ok, iterator} <- :rocksdb.iterator(state.db, state.log_cf, []),
-           {:ok, index, entry} <- :rocksdb.iterator_move(iterator, :last) do
+           {:ok, earliest_index, _} <- :rocksdb.iterator_move(iterator, :first),
+           {:ok, latest_index, entry} <- :rocksdb.iterator_move(iterator, :last) do
         :ok = :rocksdb.iterator_close(iterator)
-        {decode(index), decode(entry).term}
+        {decode(earliest_index), decode(latest_index), decode(entry).term}
       else
         {:error, :invalid_iterator} ->
-          {0, -1}
+          {0, 0, -1}
       end
 
-    %{state | latest_index: latest_index, latest_term: latest_term}
+    %{state | earliest_index: earliest_index, latest_index: latest_index, latest_term: latest_term}
   end
 end

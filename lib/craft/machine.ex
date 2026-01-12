@@ -39,7 +39,7 @@ defmodule Craft.Machine do
     @type index() :: pos_integer()
 
     @callback last_applied_log_index(private()) :: Craft.log_index() | nil
-    @callback snapshot(private()) :: {index(), snapshot(), private()} | nil
+    @callback snapshot(private()) :: {index(), snapshot()} | nil
     @callback snapshots(private()) :: %{index() => snapshot()}
     @callback prepare_to_receive_snapshot(private()) :: {:ok, data_dir(), private()}
     @callback receive_snapshot(private()) :: {:ok, private()}
@@ -90,6 +90,7 @@ defmodule Craft.Machine do
       :global_clock,
       :lease_expires_at,
       :last_quorum_at,
+      :snapshotter_pid, # pathalogical mutex to serialize snapshot-taking
       commit_index: 0,
       # we need to wait for the section 5.4.2 entry to commit before servicing client requests
       # boolean | {:waiting, log_index}
@@ -358,33 +359,40 @@ defmodule Craft.Machine do
     #
     # only snapshot up to one entry before the latest, since we need the prev log entry to create AppendEntries
     #
-    private =
+    state =
       if should_snapshot? do
         if state.module.__craft_mutable__() do
-          case state.module.snapshot(state.private) do
-            {index, path, private} ->
-              Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
+          if !state.snapshotter_pid or !Process.alive?(state.snapshotter_pid) do
+            snapshotter_pid =
+              spawn_link(fn ->
+                case state.module.snapshot(state.private) do
+                  {index, path} ->
+                    Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
 
-              :ok = Consensus.snapshot_ready(state.name, index, snapshot_info(path))
+                    :ok = Consensus.snapshot_ready(state.name, index, snapshot_info(path))
 
-              private
+                  # machine decided not to snapshot (perhaps no commands have run)
+                  nil ->
+                    :noop
+                end
+              end)
 
-            # machine decided not to snapshot (perhaps no commands have run)
-            _ ->
-              state.private
+            %{state | snapshotter_pid: snapshotter_pid}
+          else
+            state
           end
         else
           Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
 
           :ok = Consensus.snapshot_ready(state.name, state.last_applied, state.module.snapshot(state.private))
 
-          state.private
+          state
         end
       else
-        state.private
+        state
       end
 
-    {:noreply, %{state | private: private, last_quorum_at: last_quorum_at, commit_index: new_commit_index}}
+    {:noreply, %{state | last_quorum_at: last_quorum_at, commit_index: new_commit_index}}
   end
 
   #

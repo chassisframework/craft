@@ -13,11 +13,8 @@ config :logger, :default_formatter,
 
 config :craft, :snapshot_server_port, 1337
 
-# basic flow control, pending dynamic solution
-config :craft, :maximum_log_entries_per_heartbeat, 200
-
 # max log length before a compaction snapshot is triggered
-config :craft, :maximum_log_length, 10_000
+config :craft, :maximum_log_length, 100_000
 
 heartbeat_interval = 30 # ms
 config :craft, :heartbeat_interval, heartbeat_interval
