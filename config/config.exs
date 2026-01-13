@@ -13,6 +13,9 @@ config :logger, :default_formatter,
 
 config :craft, :snapshot_server_port, 1337
 
+# naive congestion control
+config :craft, :maximum_entries_per_heartbeat, 1_000
+
 # max log length before a compaction snapshot is triggered
 config :craft, :maximum_log_length, 100_000
 

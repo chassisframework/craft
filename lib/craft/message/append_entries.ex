@@ -36,7 +36,8 @@ defmodule Craft.Message.AppendEntries do
     next_index = Map.get(state.leader_state.next_indices, to_node)
     prev_log_index = next_index - 1
     {:ok, %{term: prev_log_term}} = Persistence.fetch(state.persistence, prev_log_index)
-    entries = Persistence.fetch_from(state.persistence, next_index)
+    max_index = min(Persistence.latest_index(state.persistence), next_index + Application.get_env(:craft, :maximum_entries_per_heartbeat, 1_000))
+    entries = Persistence.fetch_between(state.persistence, next_index..max_index//1)
 
     leadership_transfer =
       case state.leader_state.leadership_transfer do
