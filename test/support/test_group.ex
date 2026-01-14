@@ -47,8 +47,19 @@ defmodule Craft.TestGroup do
   end
 
   @doc false
-  def replace_consensus_state(name, node, overrides) do
-    :rpc.call(node, Craft.Application, :lookup, [name, Craft.Consensus])
-    |> :sys.replace_state(fn {:waiting_to_start, data} -> {:waiting_to_start, struct(data, overrides)} end)
+  # state modification function needs to be re-constructed on test nodes, since anon funcs in .exs files (test files) aren't shipped to remote test nodes. 
+  def replace_consensus_state(name, node, quoted_fun) do
+    :ok = :rpc.call(node, __MODULE__, :do_replace_state, [name, quoted_fun])
+  end
+
+  @doc false
+  def do_replace_state(name, quoted_fun) do
+    {fun, []} = Code.eval_quoted(quoted_fun)
+
+    name
+    |> Craft.Application.lookup(Craft.Consensus)
+    |> :sys.replace_state(fn {:waiting_to_start, state} -> {:waiting_to_start, fun.(state)} end)
+
+    :ok
   end
 end

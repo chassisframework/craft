@@ -292,35 +292,39 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
   defp do_dump(db, cf) do
     {:ok, iterator} = :rocksdb.iterator(db, cf, [])
-    {:ok, index, value} = :rocksdb.iterator_move(iterator, :first)
+    case :rocksdb.iterator_move(iterator, :first) do
+      {:error, :invalid_iterator} ->
+        :empty
 
-    Stream.repeatedly(fn ->
-      case :rocksdb.iterator_move(iterator, :next) do
-        {:ok, index, value} ->
-          {index, value}
+      {:ok, index, value} ->
+        Stream.repeatedly(fn ->
+          case :rocksdb.iterator_move(iterator, :next) do
+            {:ok, index, value} ->
+              {index, value}
 
-        _ ->
-          :ok = :rocksdb.iterator_close(iterator)
-          :eof
-      end
-    end)
-    |> Stream.take_while(fn
-      :eof ->
-        false
+            _ ->
+              :ok = :rocksdb.iterator_close(iterator)
+              :eof
+          end
+        end)
+        |> Stream.take_while(fn
+          :eof ->
+            false
 
-      _ ->
-        true
-    end)
-    |> Enum.concat([{index, value}])
-    |> Enum.map(fn {k, v} ->
-      try do
-        {decode(k), decode(v)}
-      rescue
-        _ ->
-          {k, decode(v)}
-      end
-    end)
-    |> Enum.sort()
+          _ ->
+            true
+        end)
+        |> Enum.concat([{index, value}])
+        |> Enum.map(fn {k, v} ->
+          try do
+            {decode(k), decode(v)}
+          rescue
+            _ ->
+              {k, decode(v)}
+          end
+        end)
+        |> Enum.sort()
+    end
   end
 
   defp encode(term), do: :erlang.term_to_binary(term)

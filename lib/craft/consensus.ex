@@ -136,12 +136,12 @@ defmodule Craft.Consensus do
   def init(args) do
     Logger.metadata(name: args.name, node: node(), nexus: args[:nexus_pid])
 
-    data = State.new(args.name, args[:nodes], args.persistence, args.machine, args[:global_clock], args[:nexus_pid])
-
     if nexus_pid = args[:nexus_pid] do
       remote_group_leader = :rpc.call(node(nexus_pid), Process, :whereis, [:init])
       :logger.update_process_metadata(%{gl: remote_group_leader})
     end
+
+    data = State.new(args.name, args[:nodes], args.persistence, args.machine, args[:global_clock], args[:nexus_pid])
 
     if args[:manual_start] do
       {:ok, :waiting_to_start, data}
@@ -182,7 +182,9 @@ defmodule Craft.Consensus do
 
       {:next_state, data.state, data, []}
     end
-    # def ready_to_test({:call, _from}, :catch_up, _data), do: {:keep_state_and_data, [:postpone]}
+    def waiting_to_start({:call, from}, :state, data) do
+      {:keep_state_and_data, [{:reply, from, {data, Persistence.dump(data.persistence)}}]}
+    end
   end
 
   #
@@ -1084,9 +1086,13 @@ defmodule Craft.Consensus do
         end
       end)
 
+    logger_metadata = :logger.get_process_metadata()
+
     state.members
     |> Members.other_nodes()
     |> Task.async_stream(fn to_node ->
+      :logger.set_process_metadata(logger_metadata)
+
       if state.leader_state.snapshot_transfers[to_node] do
         Message.install_snapshot(state, to_node)
       else
