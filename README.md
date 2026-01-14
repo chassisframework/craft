@@ -14,6 +14,8 @@ todo:
   can delay applying writes to user's machine until a read occurs, or a quiescent period. this should avoid the blocking command delay of the user's machine, but still
   maintains correctness because the write has been confirmed by quorum. this would require the user to opt into a `write-optimized` machine option, to confirm that 
   `handle_command` will only return `:ok`
+- flow control (max bytes per message, sliding window, etc)
+- don't deserialize entries when fetching from persistence for transmission to followers (also lets us know how big a message is going to be, for congestion control)
 
 features:
 - leader leases for fast linearizable reads (pluggable time-source support, batteries included with clockbound)
