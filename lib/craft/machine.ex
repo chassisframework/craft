@@ -290,6 +290,8 @@ defmodule Craft.Machine do
 
     entries_since_last_commit = entries_by_type(log, state.commit_index+1..new_commit_index//1)
 
+    state = %{state | last_quorum_at: last_quorum_at, commit_index: new_commit_index}
+
     state =
       Enum.reduce(entries_since_last_commit[MembershipEntry] || [], state, fn {index, _entry}, state ->
         reply_to_command(state, index, :ok)
@@ -392,7 +394,7 @@ defmodule Craft.Machine do
         state
       end
 
-    {:noreply, %{state | last_quorum_at: last_quorum_at, commit_index: new_commit_index}}
+    {:noreply, state}
   end
 
   #

@@ -36,10 +36,10 @@ defmodule Craft.Persistence do
   @callback put_metadata(any(), struct()) :: any()
   @callback fetch_metadata(any()) :: {:ok, binary()} | :error
 
-  # write_buffer should also write write the metadata out:
-  # lease needs to be fsync'd with every AppendEntries, fsyncs are expensive, this adds it to the append buffer so we only have to do one:
-  # 1. on the leader when it exteneds its lease before a heartbeat
-  # 2. on a follower when it updates the lease as part of AppendEntries receipt
+  # commit_buffer/1 should also write out the metadata:
+  #   lease needs to be fsync'd with every AppendEntries, fsyncs are expensive, this adds it to the buffer so we only have to do one:
+  #   1. on the leader when it exteneds its lease before a heartbeat
+  #   2. on a follower when it updates the lease as part of AppendEntries receipt
   @callback buffer_append(any(), entry()) :: {any(), index :: integer()}
   @callback buffer_rewind(any(), index :: integer()) :: any()
   @callback buffer_metadata_put(any(), metadata :: struct()) :: any()

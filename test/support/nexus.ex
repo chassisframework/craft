@@ -209,9 +209,11 @@ defmodule Craft.Nexus do
   end
 
   @impl :logger_handler
-  def log(event, _config) do
-    GenServer.cast(event.meta.nexus, {:log, event})
+  def log(%{meta: %{nexus: nexus}} = event, _config) do
+    GenServer.cast(nexus, {:log, event})
   end
+
+  def log(_event, _config), do: :noop
 
   defp evaluate_waiter(%State{wait_until: nil} = state, _event), do: state
 

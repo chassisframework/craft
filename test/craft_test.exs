@@ -103,6 +103,7 @@ defmodule CraftTest do
     ref = make_ref()
     :ok = SimpleMachine.put(name, :test_process_from, {self(), ref})
 
+    Process.sleep(5_000)
     %{leader: leader} = wait_until(nexus, {Stability, :all})
 
     new_leader = Enum.random(nodes -- [leader])
@@ -148,7 +149,7 @@ defmodule CraftTest do
 
     wait_until(nexus, {Stability, :majority})
 
-    assert {:ok, ^ref} = SimpleMachine.get(name, :test_key, consistency: :eventual)
+    assert {:ok, ^ref} = SimpleMachine.get(name, :test_key)
 
     File.rm_rf!(backup_dir)
   end
