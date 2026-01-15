@@ -29,4 +29,12 @@ defmodule Craft.Tracing do
 
     Keyword.merge([term: state.current_term, ansi_color: color], logger_metadata(extras))
   end
+
+  def time(fun, metric, meta, measurements \\ %{}) do
+    {duration_ms, return} = :timer.tc(fun, :millisecond)
+
+    :telemetry.execute(metric, Map.merge(measurements, %{duration_ms: duration_ms}), meta)
+
+    return
+  end
 end

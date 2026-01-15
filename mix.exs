@@ -37,7 +37,8 @@ defmodule Craft.MixProject do
 
   defp deps do
     [
-      {:rocksdb, "~> 2.5.0"}
+      {:rocksdb, "~> 2.5.0"},
+      {:telemetry, "~> 1.0"}
     ]
   end
 

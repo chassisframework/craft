@@ -37,7 +37,10 @@ defmodule Craft.Message.AppendEntries do
     prev_log_index = next_index - 1
     {:ok, %{term: prev_log_term}} = Persistence.fetch(state.persistence, prev_log_index)
     max_index = min(Persistence.latest_index(state.persistence), next_index + Application.get_env(:craft, :maximum_entries_per_heartbeat, 1_000))
-    entries = Persistence.fetch_between(state.persistence, next_index..max_index//1)
+    index_range = next_index..max_index//1
+    entries = Persistence.fetch_between(state.persistence, index_range)
+
+    :telemetry.execute([:craft, :heartbeat, :append_entries], %{num_entries: Enum.count(index_range)}, %{group_name: state.name, leader: node(), follower: to_node})
 
     leadership_transfer =
       case state.leader_state.leadership_transfer do

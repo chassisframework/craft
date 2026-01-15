@@ -14,7 +14,7 @@ defmodule Craft.Machine do
   alias Craft.Persistence
   alias Craft.SnapshotServer.RemoteFile
 
-  import Craft.Tracing, only: [logger_metadata: 1]
+  import Craft.Tracing, only: [logger_metadata: 1, time: 3, time: 4]
   import Craft.Application, only: [via: 2, lookup: 2]
 
   require Logger
@@ -365,8 +365,8 @@ defmodule Craft.Machine do
       if should_snapshot? do
         if state.module.__craft_mutable__() do
           if !state.snapshotter_pid or !Process.alive?(state.snapshotter_pid) do
-            snapshotter_pid =
-              spawn_link(fn ->
+            snapshotter_pid = spawn_link(fn ->
+              time(fn ->
                 case state.module.snapshot(state.private) do
                   {index, path} ->
                     Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
@@ -377,7 +377,10 @@ defmodule Craft.Machine do
                   nil ->
                     :noop
                 end
-              end)
+              end,
+              [:craft, :machine, :user, :snapshot],
+              %{group_name: state.name, node: node()})
+            end)
 
             %{state | snapshotter_pid: snapshotter_pid}
           else
@@ -421,13 +424,18 @@ defmodule Craft.Machine do
          {:ok, lease_time} when lease_time > 0 <- GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) do
       Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
-      case state.module.handle_query(query, {:direct, from}, state.private) do
-        {:reply, reply} ->
-          {:reply, reply, state}
+      time(fn ->
+        case state.module.handle_query(query, {:direct, from}, state.private) do
+          {:reply, reply} ->
+            {:reply, reply, state}
 
-        :noreply ->
-          {:noreply, state}
-      end
+          :noreply ->
+            {:noreply, state}
+        end
+      end,
+      [:craft, :machine, :user, :handle_query],
+      %{group_name: state.name, node: node(), lease_read: true, linearizable: true})
+
     else
       _ ->
       {:reply, {:error, :not_leaseholder}, state}
@@ -439,14 +447,18 @@ defmodule Craft.Machine do
 
     query_time = :erlang.monotonic_time(:millisecond)
 
-    state = 
-      case state.module.handle_query(query, {:quorum, query_time, self(), from}, state.private) do
-        {:reply, reply} ->
-          %{state | client_query_results: [{from, reply} | state.client_query_results]}
+    state =
+      time(fn ->
+        case state.module.handle_query(query, {:quorum, query_time, self(), from}, state.private) do
+          {:reply, reply} ->
+            %{state | client_query_results: [{from, reply} | state.client_query_results]}
 
-        :noreply ->
-          %{state | pending_parallel_queries: MapSet.put(state.pending_parallel_queries, from)}
-      end
+          :noreply ->
+            %{state | pending_parallel_queries: MapSet.put(state.pending_parallel_queries, from)}
+        end
+      end,
+      [:craft, :machine, :user, :handle_query],
+      %{group_name: state.name, node: node(), quorum_read: true, linearizable: true})
 
     {:noreply, state}
   end
@@ -464,15 +476,19 @@ defmodule Craft.Machine do
 
   def handle_call({:query, {:eventual, :leader}, query}, from, state) do
     if state.role == :leader do
-      Logger.debug("executing query", logger_metadata(trace: {:query, :leader_eventual, :quorum_read, from, query}))
+      Logger.debug("executing query", logger_metadata(trace: {:query, :leader_eventual, from, query}))
 
-      case state.module.handle_query(query, {:direct, from}, state.private) do
-        {:reply, reply} ->
-          {:reply, reply, state}
+      time(fn ->
+        case state.module.handle_query(query, {:direct, from}, state.private) do
+          {:reply, reply} ->
+            {:reply, reply, state}
 
-        :noreply ->
-          {:noreply, state}
-      end
+          :noreply ->
+            {:noreply, state}
+        end
+      end,
+      [:craft, :machine, :user, :handle_query],
+      %{group_name: state.name, node: node(), eventual: true})
     else
       case MemberCache.get(state.name) do
         {:ok, %GroupStatus{leader: leader}} when not is_nil(leader) ->
@@ -487,13 +503,17 @@ defmodule Craft.Machine do
   def handle_call({:query, :eventual, query}, from, state) do
     Logger.debug("executing query", logger_metadata(trace: {:query, :eventual, :quorum_read, from, query}))
 
-    case state.module.handle_query(query, {:direct, from}, state.private) do
-      {:reply, reply} ->
-        {:reply, reply, state}
+    time(fn ->
+      case state.module.handle_query(query, {:direct, from}, state.private) do
+        {:reply, reply} ->
+          {:reply, reply, state}
 
-      :noreply ->
-        {:noreply, state}
-    end
+        :noreply ->
+          {:noreply, state}
+      end
+    end,
+    [:craft, :machine, :user, :handle_query],
+    %{group_name: state.name, node: node(), eventual: true})
   end
 
   def handle_call({{:query_reply, query_time, reply}, query_from}, _from, state) do
@@ -676,10 +696,14 @@ defmodule Craft.Machine do
       if function_exported?(state.module, :handle_commands, 2) do
         Logger.debug("applying batch commands", logger_metadata(trace: {:applying_commands, entries}))
 
+        commands_with_indexes = Enum.map(entries, fn {index, entry} -> {entry.command, index} end)
         {replies, private} =
-          entries
-          |> Enum.map(fn {index, entry} -> {entry.command, index} end)
-          |> state.module.handle_commands(state.private)
+          time(fn ->
+            state.module.handle_commands(commands_with_indexes, state.private)
+          end,
+          [:craft, :machine, :user, :handle_commands],
+          %{group_name: state.name, node: node()},
+          %{num: Enum.count(commands_with_indexes)})
 
         state = %{state | private: private}
 
@@ -698,19 +722,24 @@ defmodule Craft.Machine do
           Logger.debug("applying command entry", logger_metadata(trace: {:applying_command, entry}))
 
           {reply, private} =
-            case state.module.handle_command(entry.command, index, state.private) do
-              {reply, private} ->
-                {reply, private}
+            time(fn ->
+              case state.module.handle_command(entry.command, index, state.private) do
+                {reply, private} ->
+                  {reply, private}
 
-                # {reply, side_effects, private} ->
-                #   if state.role == :leader do
-                #     Enum.each(side_effects, fn {m, f, a} ->
-                #       spawn(fn -> apply(m, f, a) end)
-                #     end)
-                #   end
+                  # {reply, side_effects, private} ->
+                  #   if state.role == :leader do
+                  #     Enum.each(side_effects, fn {m, f, a} ->
+                  #       spawn(fn -> apply(m, f, a) end)
+                  #     end)
+                  #   end
 
-                #   {reply, private}
-            end
+                  #   {reply, private}
+              end
+            end,
+            [:craft, :machine, :user, :handle_command],
+            %{group_name: state.name, node: node()})
+
 
           state = %{state | private: private}
 

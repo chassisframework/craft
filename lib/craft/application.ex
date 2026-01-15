@@ -29,6 +29,8 @@ defmodule Craft.Application do
           []
       end
 
+    # Craft.TelemetryListener.attach()
+
     {:ok, pid} = Supervisor.start_link(children ++ backend_children, strategy: :rest_for_one)
 
     # lazy-load in dev, annoying.

@@ -37,7 +37,7 @@ defmodule Craft.Consensus do
 
   require Logger
 
-  import Craft.Tracing, only: [logger_metadata: 1, logger_metadata: 2]
+  import Craft.Tracing, only: [logger_metadata: 1, logger_metadata: 2, time: 3]
   import Craft.Application, only: [via: 2]
 
   @behaviour :gen_statem
@@ -1055,53 +1055,57 @@ defmodule Craft.Consensus do
   defp not_leader_response(%State{leader_id: leader_id}), do: {:error, {:not_leader, leader_id}}
 
   defp heartbeat(%State{} = state) do
-    state = LeaderState.QuorumStatus.start_new_round(state)
+    time(fn ->
+      state = LeaderState.QuorumStatus.start_new_round(state)
 
-    state =
-      if state.global_clock do
-        case GlobalTimestamp.now(state.global_clock) do
-          {:ok, now} ->
-            %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
+      state =
+        if state.global_clock do
+          case GlobalTimestamp.now(state.global_clock) do
+            {:ok, now} ->
+              %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
 
-          error ->
-            Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state, trace: :global_clock_failure))
+            error ->
+              Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state, trace: :global_clock_failure))
 
-            throw({:next_state, :lonely, state})
-        end
-      else
-        state
-      end
-
-    state = Metadata.buffer_put(state)
-    state = %{state | persistence: Persistence.commit_buffer(state.persistence)}
-
-    state =
-      state.members
-      |> Members.other_nodes()
-      |> Enum.reduce(state, fn to_node, state ->
-        if LeaderState.needs_snapshot?(state, to_node) do
-          LeaderState.create_snapshot_transfer(state, to_node)
+              throw({:next_state, :lonely, state})
+          end
         else
           state
         end
-      end)
 
-    logger_metadata = :logger.get_process_metadata()
+      state = Metadata.buffer_put(state)
+      state = %{state | persistence: Persistence.commit_buffer(state.persistence)}
 
-    state.members
-    |> Members.other_nodes()
-    |> Task.async_stream(fn to_node ->
-      :logger.set_process_metadata(logger_metadata)
+      state =
+        state.members
+        |> Members.other_nodes()
+        |> Enum.reduce(state, fn to_node, state ->
+          if LeaderState.needs_snapshot?(state, to_node) do
+            LeaderState.create_snapshot_transfer(state, to_node)
+          else
+            state
+          end
+        end)
 
-      if state.leader_state.snapshot_transfers[to_node] do
-        Message.install_snapshot(state, to_node)
-      else
-        Message.append_entries(state, to_node)
-      end
-    end, ordered: false)
-    |> Stream.run()
+      logger_metadata = :logger.get_process_metadata()
 
-    state
+      state.members
+      |> Members.other_nodes()
+      |> Task.async_stream(fn to_node ->
+        :logger.set_process_metadata(logger_metadata)
+
+        if state.leader_state.snapshot_transfers[to_node] do
+          Message.install_snapshot(state, to_node)
+        else
+          Message.append_entries(state, to_node)
+        end
+      end, ordered: false)
+      |> Stream.run()
+
+      state
+    end,
+    [:craft, :heartbeat],
+    %{group_name: state.name, node: node()})
   end
 
   defp handle_command({membership_change, node}, from, data) when membership_change in [:add_member, :remove_member] do
