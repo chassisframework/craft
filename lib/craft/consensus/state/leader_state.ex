@@ -140,6 +140,9 @@ defmodule Craft.Consensus.State.LeaderState do
     MemberCache.update(state)
 
     if notify_machine? do
+      if state.lease_expires_at && !state.leader_state.waiting_for_lease do
+        MemberCache.update_lease_holder(state)
+      end
       # snapshotting truncates the log, so we want to make sure that all followers are caught up first
       # we don't want to delete a snapshot that's being downloaded, nor truncate the log before a follower
       # that's just pulled a snapshot can catch up

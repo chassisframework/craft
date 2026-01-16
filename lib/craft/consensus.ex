@@ -861,6 +861,8 @@ defmodule Craft.Consensus do
 
           data = put_in(data.leader_state.waiting_for_lease, false)
 
+          MemberCache.update_lease_holder(data)
+
           Machine.lease_taken(data)
 
           {:keep_state, data}

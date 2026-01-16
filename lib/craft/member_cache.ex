@@ -7,7 +7,6 @@ defmodule Craft.MemberCache do
   alias Craft.Consensus.State, as: ConsensusState
   alias Craft.Consensus.State.Members
   alias Craft.GlobalTimestamp
-  alias Craft.Machine.State, as: MachineState
   alias Craft.Persistence
 
   defmodule GroupStatus do
@@ -39,7 +38,6 @@ defmodule Craft.MemberCache do
     with {lease_holder, global_clock, lease_expires_at} when lease_holder == node() <- :ets.lookup_element(__MODULE__, group_name, index(:lease_holder)),
          {:ok, time} when time > 0 <- GlobalTimestamp.time_until_lease_expires(global_clock, lease_expires_at) do
       true
-
     else
       _ ->
         false
@@ -108,7 +106,7 @@ defmodule Craft.MemberCache do
   end
 
   @doc false
-  def update_lease_holder(%MachineState{} = state) do
+  def update_lease_holder(%ConsensusState{} = state) do
     :ets.update_element(__MODULE__, state.name, {index(:lease_holder), {node(), state.global_clock, state.lease_expires_at}})
   end
 

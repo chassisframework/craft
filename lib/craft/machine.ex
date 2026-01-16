@@ -5,7 +5,6 @@ defmodule Craft.Machine do
   alias Craft.Configuration
   alias Craft.Consensus
   alias Craft.Consensus.State, as: ConsensusState
-  alias Craft.GlobalTimestamp
   alias Craft.Log.CommandEntry
   alias Craft.Log.MembershipEntry
   alias Craft.Log.SnapshotEntry
@@ -88,7 +87,6 @@ defmodule Craft.Machine do
       :private,
       :role,
       :global_clock,
-      :lease_expires_at,
       :last_quorum_at,
       :snapshotter_pid, # pathalogical mutex to serialize snapshot-taking
       commit_index: 0,
@@ -139,7 +137,7 @@ defmodule Craft.Machine do
   def lease_taken(%ConsensusState{} = state) do
     state.name
     |> lookup(__MODULE__)
-    |> GenServer.call({:lease_taken, state.lease_expires_at})
+    |> GenServer.call(:lease_taken)
   end
 
   def state(name) do
@@ -165,17 +163,12 @@ defmodule Craft.Machine do
   # entries
   #
   def quorum_reached(%ConsensusState{} = state, should_snapshot?) do
-    lease_expires_at =
-      if state.global_clock && state.state == :leader && !state.leader_state.waiting_for_lease do
-        state.lease_expires_at
-      end
-
     # nil if not leader
     last_quorum_at = get_in(state.leader_state.quorum_status.latest_successful_round_sent_at)
 
     state.name
     |> lookup(__MODULE__)
-    |> GenServer.cast({:quorum_reached, state.commit_index, state.persistence, should_snapshot?, lease_expires_at, last_quorum_at})
+    |> GenServer.cast({:quorum_reached, state.commit_index, state.persistence, should_snapshot?, last_quorum_at})
   end
 
   def call(name, node, request, timeout) do
@@ -279,10 +272,9 @@ defmodule Craft.Machine do
   end
 
   @impl true
-  def handle_cast({:quorum_reached, new_commit_index, log, should_snapshot?, lease_expires_at, last_quorum_at}, state) do
+  def handle_cast({:quorum_reached, new_commit_index, log, should_snapshot?, last_quorum_at}, state) do
     Logger.debug(fn ->
       metadata = %{}
-      metadata = if lease_expires_at, do: Map.put(metadata, :lease_expires_at, lease_expires_at), else: metadata
       metadata = if new_commit_index > state.last_applied, do: Map.put(metadata, :new_commit_index, new_commit_index), else: metadata
 
       {"quorum reached", logger_metadata(trace: {:quorum_reached, metadata})}
@@ -316,13 +308,7 @@ defmodule Craft.Machine do
           GenServer.reply(from, result)
         end
 
-        state = %{state | client_query_results: [], lease_expires_at: lease_expires_at}
-
-        if lease_expires_at do
-          MemberCache.update_lease_holder(state)
-        end
-
-        state
+        %{state | client_query_results: []}
       else
         state
       end
@@ -420,8 +406,7 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
-    with %GlobalTimestamp{} <- state.lease_expires_at,
-         {:ok, lease_time} when lease_time > 0 <- GlobalTimestamp.time_until_lease_expires(state.global_clock, state.lease_expires_at) do
+    if MemberCache.holding_lease?(state.name) do
       Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
       time(fn ->
@@ -435,9 +420,7 @@ defmodule Craft.Machine do
       end,
       [:craft, :machine, :user, :handle_query],
       %{group_name: state.name, node: node(), lease_read: true, linearizable: true})
-
     else
-      _ ->
       {:reply, {:error, :not_leaseholder}, state}
     end
   end
@@ -650,11 +633,7 @@ defmodule Craft.Machine do
   end
 
   @impl true
-  def handle_call({:lease_taken, lease_expires_at}, _from, state) do
-    state = %{state | lease_expires_at: lease_expires_at}
-
-    MemberCache.update_lease_holder(state)
-
+  def handle_call(:lease_taken, _from, state) do
     private =
       if function_exported?(state.module, :handle_lease_taken, 1) do
         state.module.handle_lease_taken(state.private)
