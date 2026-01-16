@@ -201,8 +201,6 @@ defmodule Craft.Consensus do
   def lonely(:enter, _previous_state, data) do
     data = State.become_lonely(data)
 
-    MemberCache.update(data)
-
     Machine.update_role(data)
 
     Logger.info("became lonely", logger_metadata(data, trace: {:became, :lonely}))
@@ -447,8 +445,6 @@ defmodule Craft.Consensus do
   def follower(:enter, _previous_state, data) do
     data = State.become_follower(data)
 
-    MemberCache.update(data)
-
     Machine.update_role(data)
 
     Logger.info("became follower", logger_metadata(data, trace: {:became, :follower}))
@@ -629,8 +625,6 @@ defmodule Craft.Consensus do
   def candidate(:enter, :follower, %State{leadership_transfer_request_id: id} = data) when is_tuple(id) or id == :internal do
     data = State.become_candidate(data)
 
-    MemberCache.update(data)
-
     Machine.update_role(data)
 
     Logger.info("became candidate, initiating leadership transfer election", logger_metadata(data, trace: {:became, :candidate}))
@@ -643,8 +637,6 @@ defmodule Craft.Consensus do
 
   def candidate(:enter, _previous_state, data) do
     data = State.become_candidate(data)
-
-    MemberCache.update(data)
 
     Machine.update_role(data)
 
@@ -781,9 +773,6 @@ defmodule Craft.Consensus do
 
   def leader(:enter, _previous_state, data) do
     data = State.become_leader(data)
-
-    MemberCache.update(data)
-    MemberCache.set_leader_ready(data.name, false)
 
     #
     # when the cluster starts up, each node is explicitly given the same configuration to

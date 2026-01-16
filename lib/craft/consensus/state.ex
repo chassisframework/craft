@@ -5,9 +5,10 @@ defmodule Craft.Consensus.State do
   alias Craft.Consensus.State.Members
   alias Craft.Log.MembershipEntry
   alias Craft.Log.SnapshotEntry
+  alias Craft.MemberCache
+  alias Craft.Message.RequestVote
   alias Craft.Persistence
   alias Craft.Persistence.Metadata
-  alias Craft.Message.RequestVote
 
   require Logger
 
@@ -96,6 +97,7 @@ defmodule Craft.Consensus.State do
       election: Election.new(state.members)
     }
     |> release_buffer()
+    |> update_cache()
   end
 
   def become_follower(%__MODULE__{} = state) do
@@ -107,6 +109,7 @@ defmodule Craft.Consensus.State do
       election: nil
     }
     |> release_buffer()
+    |> update_cache()
   end
 
   def become_receiving_snapshot(%__MODULE__{} = state) do
@@ -118,6 +121,7 @@ defmodule Craft.Consensus.State do
       election: nil
     }
     |> release_buffer()
+    |> update_cache()
   end
 
   # leadership_transfer_request_id set directly in Consensus
@@ -131,6 +135,7 @@ defmodule Craft.Consensus.State do
     }
     |> set_current_term(state.current_term + 1, node())
     |> release_buffer()
+    |> update_cache()
   end
 
   # the leader buffers log entry and writes them in batches
@@ -143,10 +148,18 @@ defmodule Craft.Consensus.State do
       election: nil
     }
     |> set_current_term(state.current_term)
+    |> update_cache()
   end
 
   defp release_buffer(%__MODULE__{} = state) do
     %{state | persistence: Persistence.release_buffer(state.persistence)}
+  end
+
+  defp update_cache(%__MODULE__{} = state) do
+    MemberCache.update(state)
+    MemberCache.set_leader_ready(state.name, false)
+
+    state
   end
 
   # voting for others
