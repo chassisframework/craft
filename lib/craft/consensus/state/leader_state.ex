@@ -1,4 +1,5 @@
 defmodule Craft.Consensus.State.LeaderState do
+  alias Craft.Consensus
   alias Craft.Consensus.State
   alias Craft.Consensus.State.LeaderState.QuorumStatus
   alias Craft.Consensus.State.Members
@@ -154,7 +155,7 @@ defmodule Craft.Consensus.State.LeaderState do
         end)
 
       all_followers_caught_up = Enum.empty?(state.members.catching_up_nodes) and voting_nodes_caught_up
-      log_too_long = Persistence.length(state.persistence) > Application.get_env(:craft, :maximum_log_length, 100_000)
+      log_too_long = Persistence.length(state.persistence) > Consensus.maximum_log_length()
       # log_too_big = Persistence.log_size() > 100mb or 100 entries, etc
 
       Machine.quorum_reached(state, all_followers_caught_up && log_too_long)

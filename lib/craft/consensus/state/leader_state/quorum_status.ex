@@ -1,4 +1,5 @@
 defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
+  alias Craft.Consensus
   alias Craft.Consensus.State
   alias Craft.Message.AppendEntries
 
@@ -76,7 +77,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
             follower_lagging? = round_sent_at != quorum_status.current_round_sent_at
 
             if follower_lagging? do
-              lag = received_at - round_sent_at - Application.get_env(:craft, :heartbeat_interval)
+              lag = received_at - round_sent_at - Consensus.heartbeat_interval()
 
               Logger.warning("heartbeat reply from lagging follower, lag=#{lag}ms: #{inspect results}.", logger_metadata(state))
 
@@ -88,7 +89,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
             quorum_status =
               if round_is_most_recent_and_just_succeeded? do
                 duration = received_at - round_sent_at
-                breathing_room = Application.get_env(:craft, :heartbeat_interval) - duration
+                breathing_room = Consensus.heartbeat_interval() - duration
                 :telemetry.execute([:craft, :quorum, :succeeded],
                                    %{duration_ms: duration, breathing_room_ms: breathing_room},
                                    %{group_name: state.name, leader: node()})

@@ -42,13 +42,15 @@ defmodule Craft.Consensus do
 
   @behaviour :gen_statem
 
-  defp heartbeat_interval, do: Application.get_env(:craft, :heartbeat_interval, 100)
-  defp checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 1000)
-  defp lonely_timeout, do: Application.get_env(:craft, :lonely_timeout, 1000)
-  defp leader_lease_period, do: Application.get_env(:craft, :leader_lease_period, 800)
-  defp election_timeout, do: Application.get_env(:craft, :election_timeout, 1500)
-  defp election_timeout_jitter, do: Application.get_env(:craft, :election_timeout_jitter, 1500)
-  defp leadership_transfer_timeout, do: Application.get_env(:craft, :leadership_transfer_timeout, 3000)
+  def heartbeat_interval, do: Application.get_env(:craft, :heartbeat_interval, 100)
+  def checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 1000)
+  def lonely_timeout, do: Application.get_env(:craft, :lonely_timeout, 1000)
+  def leader_lease_period, do: Application.get_env(:craft, :leader_lease_period, 800)
+  def election_timeout, do: Application.get_env(:craft, :election_timeout, 1500)
+  def election_timeout_jitter, do: Application.get_env(:craft, :election_timeout_jitter, 1500)
+  def leadership_transfer_timeout, do: Application.get_env(:craft, :leadership_transfer_timeout, 3000)
+  def maximum_log_length, do: Application.get_env(:craft, :maximum_log_length, 10_000)
+  def maximum_entries_per_heartbeat, do: Application.get_env(:craft, :maximum_entries_per_heartbeat, 1_000)
 
   if Mix.env == :test do
     # min floor prevents some flake in election tests
@@ -563,7 +565,7 @@ defmodule Craft.Consensus do
     Message.respond_append_entries(append_entries, success, data)
 
     if success && data.commit_index > old_commit_index do
-      log_too_long = Persistence.length(data.persistence) > Application.get_env(:craft, :maximum_log_length, 100_000)
+      log_too_long = Persistence.length(data.persistence) > maximum_log_length()
 
       Logger.debug("quorum reached", logger_metadata(data, trace: :quorum_reached))
 
