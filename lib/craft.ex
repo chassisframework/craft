@@ -91,6 +91,9 @@ defmodule Craft do
   @doc "Responds to an asynchronous query, akin to GenServer.reply/2"
   def reply(meta, reply), do: backend().reply(meta, reply)
 
+  @doc "Generates `ref` and `from` values for use in testing async queries in a sandboxed user machine that calls `reply/2`."
+  def reply_from, do: backend().reply_from()
+
   @doc "Initializes the MemberCache for the group with the given nodes"
   def discover(name, nodes), do: backend().discover(name, nodes)
 

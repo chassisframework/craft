@@ -170,6 +170,12 @@ defmodule Craft.Sandbox do
     Kernel.send(find!(), {:user_message, name, message})
   end
 
+  def reply_from do
+    ref = make_ref()
+
+    {ref, {:direct, {self(), ref}, find!()}}
+  end
+
   def reply({:direct, {_pid, _ref} = reply_ref, sandbox_pid}, reply) do
     if find!() != sandbox_pid do
       raise "sandbox boundary violation"
