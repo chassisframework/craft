@@ -24,12 +24,14 @@ defmodule Craft.Machine do
   @type reply_from :: {:direct, GenServer.from()} | {:quorum, query_time :: integer(), pid(), GenServer.from()}
 
   @callback init(Craft.group_name()) :: {:ok, private()}
+  @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
+  @callback handle_commands([{Craft.command(), Craft.log_index()}], private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
   @callback handle_query(Craft.query(), reply_from(), private()) :: {:reply, Craft.reply()} | :noreply
   @callback handle_role_change(role(), private()) :: private()
   @callback handle_lease_taken(private()) :: private()
   @callback handle_info(term(), private()) :: private()
 
-  @optional_callbacks handle_role_change: 2, handle_lease_taken: 1, handle_info: 2
+  @optional_callbacks handle_command: 3, handle_commands: 2, handle_role_change: 2, handle_lease_taken: 1, handle_info: 2
 
   defmodule MutableMachine do
     @type private() :: Craft.Machine.private()
@@ -43,33 +45,6 @@ defmodule Craft.Machine do
     @callback prepare_to_receive_snapshot(private()) :: {:ok, data_dir(), private()}
     @callback receive_snapshot(private()) :: {:ok, private()}
     @callback backup(to_directory :: Path.t(), private()) :: :ok | {:error, any()}
-  end
-
-  defmodule NormalMachine do
-    @type private() :: Craft.Machine.private()
-
-    @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
-    @callback handle_commands([{Craft.command(), Craft.log_index()}], private()) :: {Craft.reply(), private()} | {Craft.reply(), Craft.side_effects(), private()}
-
-    @optional_callbacks handle_command: 3, handle_commands: 2
-  end
-
-  defmodule WriteOptimizedMachine do
-    @moduledoc """
-    A write-optimized machine defers execution of commands until they're needed, or the system enters a quiescent period.
-
-    - Commands must only return `:ok`.
-    - You must use `Craft.leader_ready?/1` in non-Craft components to ensure linearizability
-
-    This mode takes the user's state machine out of the write path and makes it just-in-time. It essentially turns Craft into a write-ahead log, with latent command execution,
-    hence why commands may only return `:ok`, indicating that replication via quorum has taken place, but not command execution.
-    """
-    @type private() :: Craft.Machine.private()
-
-    @callback handle_command(Craft.command(), Craft.log_index(), private()) :: {:ok, private()}
-    @callback handle_commands([{Craft.command(), Craft.log_index()}], private()) :: {:ok, private()}
-
-    @optional_callbacks handle_command: 3, handle_commands: 2
   end
 
   defmodule LogStoredMachine do
@@ -89,10 +64,12 @@ defmodule Craft.Machine do
       :global_clock,
       :last_quorum_at,
       :snapshotter_pid, # pathalogical mutex to serialize snapshot-taking
+      :last_command_at, # used to determine quiescent period in write-optimized mode
       commit_index: 0,
       # we need to wait for the section 5.4.2 entry to commit before servicing client requests
       # boolean | {:waiting, log_index}
       waiting_for_first_commit: true,
+      mode: :normal, # :normal | :write_optimized
       last_applied: 0,
       client_query_results: [],
       pending_parallel_queries: MapSet.new(),
@@ -290,7 +267,7 @@ defmodule Craft.Machine do
       end)
 
     state =
-      if state.module.__craft_write_optimized__() do
+      if state.mode == :write_optimized do
         Enum.reduce(entries_since_last_commit[CommandEntry] || [], state, fn {index, _entry}, state ->
           reply_to_command(state, index, :ok)
         end)
@@ -351,6 +328,9 @@ defmodule Craft.Machine do
       if should_snapshot? do
         if state.module.__craft_mutable__() do
           if !state.snapshotter_pid or !Process.alive?(state.snapshotter_pid) do
+            # apply any outstanding commands before snapshotting (write-optimized mode)
+            state = apply_commands(state, unapplied_entries_by_type(state, log)[CommandEntry] || [])
+
             snapshotter_pid = spawn_link(fn ->
               time(fn ->
                 case state.module.snapshot(state.private) do
@@ -407,6 +387,13 @@ defmodule Craft.Machine do
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
     if MemberCache.holding_lease?(state.name) do
+      # write-optimized machine has unapplied commands
+      state =
+        if state.commit_index > state.last_applied do
+          Logger.debug("applying outstanding commands", logger_metadata(trace: {:query, :applying_commands, from, query}))
+          apply_commands(state, unapplied_entries_by_type(state)[CommandEntry] || [])
+        end
+
       Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
       time(fn ->
@@ -426,6 +413,13 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader} = state) do
+    # write-optimized machine has unapplied commands
+    state =
+      if state.commit_index > state.last_applied do
+        Logger.debug("applying outstanding commands", logger_metadata(trace: {:query, :applying_commands, from, query}))
+        apply_commands(state, unapplied_entries_by_type(state)[CommandEntry] || [])
+      end
+
     Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :quorum_read, from, query}))
 
     query_time = :erlang.monotonic_time(:millisecond)
@@ -526,7 +520,7 @@ defmodule Craft.Machine do
       {:ok, index} ->
         Logger.debug("sent command to consensus", logger_metadata(trace: {:command, from, command, async_caller}))
 
-        state = %{state | client_commands: Map.put(state.client_commands, index, {from, async_caller})}
+        state = %{state | client_commands: Map.put(state.client_commands, index, {from, async_caller}), last_command_at: :erlang.monotonic_time()}
 
         if async_caller do
           {_pid, ref} = from
@@ -645,6 +639,11 @@ defmodule Craft.Machine do
   end
 
   @impl true
+  def handle_call({:switch_mode, mode}, _from, state) do
+    {:reply, :ok, %{state | mode: mode}}
+  end
+
+  @impl true
   def handle_call(:state, _from, state) do
     machine_state =
       if function_exported?(state.module, :dump, 1) do
@@ -687,7 +686,7 @@ defmodule Craft.Machine do
         state = %{state | private: private}
 
         # if the machine is write-optimized, we've already replied
-        if not state.module.__craft_write_optimized__() do
+        if state.mode != :write_optimized do
           entries
           |> Enum.zip(replies)
           |> Enum.reduce(state, fn {{index, _entry}, reply}, state ->
@@ -722,7 +721,7 @@ defmodule Craft.Machine do
 
           state = %{state | private: private}
 
-          if not state.module.__craft_write_optimized__() do
+          if state.mode != :write_optimized do
             reply_to_command(state, index, reply)
           else
             state
@@ -752,6 +751,7 @@ defmodule Craft.Machine do
     end
   end
 
+  defp unapplied_entries_by_type(state), do: unapplied_entries_by_type(state, Consensus.get_log(state.name))
   defp unapplied_entries_by_type(state, log) do
     entries_by_type(log, state.last_applied+1..state.commit_index//1)
   end
@@ -806,7 +806,6 @@ defmodule Craft.Machine do
 
   defmacro __using__(opts) do
     mutable = !!Keyword.fetch!(opts, :mutable)
-    write_optimized = !!opts[:write_optimized]
 
     quote do
       @behaviour Craft.Machine
@@ -817,14 +816,7 @@ defmodule Craft.Machine do
         @behaviour LogStoredMachine
       end
 
-      if unquote(write_optimized) do
-        @behaviour WriteOptimizedMachine
-      else
-        @behaviour NormalMachine
-      end
-
       def __craft_mutable__(), do: unquote(mutable)
-      def __craft_write_optimized__(), do: unquote(write_optimized)
     end
   end
 end

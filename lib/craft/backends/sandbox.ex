@@ -227,6 +227,8 @@ defmodule Craft.Sandbox do
   @doc false
   def purge(_name), do: :not_implemented
   @doc false
+  def switch_mode(_name, _node, _mode), do: :not_implemented
+  @doc false
   def state(_name), do: :not_implemented
   @doc false
   def state(_name, _node), do: :not_implemented

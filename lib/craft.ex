@@ -170,6 +170,25 @@ defmodule Craft do
   @doc "Requests a different leader than the current."
   def step_down(name), do: backend().step_down(name)
 
+  @doc """
+    Switches the machine on the given `node` to the specified `mode`.
+
+    Allowed modes are: :normal | :write_optimized
+
+    A :write_optimized machine defers execution of commands until they're needed, or the system enters a quiescent period. This mode is best for write-heavy workloads or for periods of bulk ingestion.
+
+    - ALL commands will return `:ok`, regardless of the reply provided by the user's machine.
+    - You must use `Craft.leader_ready?/1` in non-Craft components to ensure linearizability
+
+    This mode takes the user's state machine out of the write path and makes it just-in-time. It essentially turns Craft into a write-ahead log, with latent command execution,
+    hence why commands may only return `:ok`, indicating that replication via quorum has taken place, but not command execution.
+
+    Please note, to preserve correctness, any linearizable query will cause the leader's machine to pause and process all outstanding commands before executing the query.
+
+    Additionally, if an election takes place, the new leader will execute all outstanding commands before assuming leadership (to preserve section 5.4.2 correctness).
+  """
+  def switch_mode(name, node, mode) when mode in [:normal, :write_optimized], do: backend().switch_mode(name, node, mode)
+
   @doc false
   def state(name, node), do: backend().state(name, node)
 

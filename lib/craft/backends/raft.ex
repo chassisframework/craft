@@ -142,6 +142,8 @@ defmodule Craft.Raft do
     end
   end
 
+  def reply_from, do: :not_implemented
+
   def reply({:direct, query_from}, reply) do
     GenServer.reply(query_from, reply)
   end
@@ -207,6 +209,12 @@ defmodule Craft.Raft do
 
   def step_down(name) do
     with_leader_redirect(name, &Consensus.step_down(name, &1))
+  end
+
+  def switch_mode(name, node, mode, opts \\ []) do
+    timeout = Keyword.get(opts, :timeout, 5_000)
+
+    call_machine(name, node, {:switch_mode, mode}, timeout)
   end
 
   defp with_leader_redirect(name, func) do
