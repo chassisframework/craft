@@ -35,7 +35,7 @@ defmodule Craft.MemberCache do
 
     :ets.insert(__MODULE__, tuple)
 
-    send(self(), :poll)
+    do_poll(group_name, members)
 
     :ok
   end
@@ -232,7 +232,9 @@ defmodule Craft.MemberCache do
           followers
         end
 
-      do_poll(group_name, nodes)
+      if group_status.leader != node() do
+        do_poll(group_name, nodes)
+      end
     end
 
     Process.send_after(self(), :poll, 5_000)
