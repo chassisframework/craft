@@ -153,7 +153,7 @@ defmodule Craft.Consensus do
   end
 
   defp continue_init(data) do
-    MemberCache.update(data)
+    MemberCache.non_leader_update(data)
 
     {:ok, snapshot} = Machine.init_or_restore(data)
 
@@ -352,7 +352,7 @@ defmodule Craft.Consensus do
       %{data | leader_id: install_snapshot.leader_id}
       |> State.set_current_term(install_snapshot.term)
 
-    MemberCache.update(data)
+    MemberCache.non_leader_update(data)
 
     {:keep_state, data}
   end
@@ -364,7 +364,7 @@ defmodule Craft.Consensus do
       %{data | leader_id: install_snapshot.leader_id}
       |> State.set_current_term(install_snapshot.term)
 
-    MemberCache.update(data)
+    MemberCache.non_leader_update(data)
 
     if data.machine.__craft_mutable__() do
       case data.incoming_snapshot_transfer do
@@ -568,7 +568,7 @@ defmodule Craft.Consensus do
       Machine.quorum_reached(data, log_too_long)
     end
 
-    MemberCache.update(data)
+    MemberCache.non_leader_update(data)
 
     # leader told us to take over leadership if our log is caught up
     if append_entries.leadership_transfer &&
@@ -1116,7 +1116,7 @@ defmodule Craft.Consensus do
             LeaderState.remove_node(data, node, entry_index)
         end
 
-      MemberCache.update(data)
+      MemberCache.leader_update(data)
 
       entry = %MembershipEntry{term: data.current_term, members: data.members}
       persistence = Persistence.append(data.persistence, entry)

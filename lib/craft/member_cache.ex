@@ -1,5 +1,13 @@
 defmodule Craft.MemberCache do
   @moduledoc false
+
+  # The goal of the cache is to provide a fairly up-to-date view of a group's status: leadership, lease-holdership, membership, log_indexes, etc...
+  # It most defiitely is a cache, though, no correctness guarantees.
+  #
+  # cache instances on followers and clients pull from the leader on an interval. followers patch in the current leader from raft messages, as well
+  # as their own maximum log index.
+  #
+
   use GenServer
 
   require Record
@@ -8,6 +16,8 @@ defmodule Craft.MemberCache do
   alias Craft.Consensus.State.Members
   alias Craft.GlobalTimestamp
   alias Craft.Persistence
+
+  require Logger
 
   defmodule GroupStatus do
     @moduledoc false
@@ -18,11 +28,14 @@ defmodule Craft.MemberCache do
 
   @doc false
   def discover(group_name, members) do
+    # initial bootstrap
     tuple =
       group_status(members: Map.new(members, fn member -> {member, %{}} end))
       |> put_elem(0, group_name)
 
     :ets.insert(__MODULE__, tuple)
+
+    send(self(), :poll)
 
     :ok
   end
@@ -31,6 +44,17 @@ defmodule Craft.MemberCache do
   def all do
     :ets.foldr(& [&1 | &2], [], __MODULE__)
     |> Map.new(fn record -> {elem(record, 0), new(record)} end)
+  end
+
+  @doc false
+  def get(group_name) do
+    case :ets.lookup(__MODULE__, group_name) do
+      [tuple] ->
+        {:ok, new(tuple)}
+
+      [] ->
+        :not_found
+    end
   end
 
   @doc false
@@ -51,7 +75,61 @@ defmodule Craft.MemberCache do
   end
 
   @doc false
-  def update(%ConsensusState{} = state) do
+  # follower
+  def remote_update(%GroupStatus{members: members} = group_status) when is_map_key(members, node()) do
+    local_members = :ets.lookup_element(__MODULE__, group_status.group_name, index(:members))
+    members = put_in(members[node()].log_index, local_members[node()].log_index)
+
+    elements = [
+      {index(:leader_ready), group_status.leader_ready},
+      {index(:lease_holder), group_status.lease_holder},
+      {index(:commit_index), group_status.commit_index},
+      {index(:current_term), group_status.current_term},
+      {index(:members), members}
+    ]
+
+    true = :ets.update_element(__MODULE__, group_status.group_name, elements)
+  end
+
+  # client
+  def remote_update(%GroupStatus{} = group_status) do
+    elements = [
+      {index(:leader_ready), group_status.leader_ready},
+      {index(:lease_holder), group_status.lease_holder},
+      {index(:commit_index), group_status.commit_index},
+      {index(:current_term), group_status.current_term},
+      {index(:leader), group_status.leader},
+      {index(:members), group_status.members}
+    ]
+
+    true = :ets.update_element(__MODULE__, group_status.group_name, elements)
+  end
+
+  @doc false
+  def non_leader_update(%ConsensusState{} = state) do
+    if :ets.update_element(__MODULE__, state.name, {index(:leader), state.leader_id}) do
+      latest_index = Persistence.latest_index(state.persistence)
+
+      members = :ets.lookup_element(__MODULE__, state.name, index(:members))
+      members =
+        if members[node()] do
+          put_in(members[node()].log_index, latest_index)
+        else
+          %{node() => %{log_index: latest_index}}
+        end
+
+      :ets.update_element(__MODULE__, state.name, {index(:members), members})
+
+      :ok
+    else
+      discover(state.name, [])
+
+      non_leader_update(state)
+    end
+  end
+
+  @doc false
+  def leader_update(%ConsensusState{} = state) do
     members =
       state.members
       |> Members.all_nodes()
@@ -92,17 +170,8 @@ defmodule Craft.MemberCache do
     else
       discover(state.name, [])
 
-      update(state)
+      leader_update(state)
     end
-  end
-
-  def update(%GroupStatus{} = group_status) do
-    elements = [
-      {index(:leader), group_status.leader},
-      {index(:members), group_status.members}
-    ]
-
-    true = :ets.update_element(__MODULE__, group_status.group_name, elements)
   end
 
   @doc false
@@ -135,17 +204,6 @@ defmodule Craft.MemberCache do
   end
 
   @doc false
-  def get(group_name) do
-    case :ets.lookup(__MODULE__, group_name) do
-      [tuple] ->
-        {:ok, new(tuple)}
-
-      [] ->
-        :not_found
-    end
-  end
-
-  @doc false
   def start_link(args) do
     GenServer.start_link(__MODULE__, args, name: __MODULE__)
   end
@@ -160,24 +218,21 @@ defmodule Craft.MemberCache do
   end
 
   @impl GenServer
-  def handle_call({:get, group_name}, _from, state) do
-    {:reply, get(group_name), state}
-  end
-
-  @impl GenServer
   def handle_info(:poll, state) do
     for {group_name, group_status} <- all() do
-      # group members should not poll their own group
-      if not Map.has_key?(group_status.members, node()) do
-        followers =
-          group_status.members
-          |> Map.delete(group_status.leader)
-          |> Map.keys()
+      followers =
+        group_status.members
+        |> Map.delete(group_status.leader)
+        |> Map.keys()
 
-        nodes = [group_status.leader | followers]
+      nodes =
+        if group_status.leader do
+          [group_status.leader | followers]
+        else
+          followers
+        end
 
-        do_poll(group_name, nodes)
-      end
+      do_poll(group_name, nodes)
     end
 
     Process.send_after(self(), :poll, 5_000)
@@ -185,19 +240,17 @@ defmodule Craft.MemberCache do
     {:noreply, state}
   end
 
-  defp do_poll(_group_name, []), do: :not_found
-  defp do_poll(group_name, [nil | rest]), do: do_poll(group_name, rest)
-  defp do_poll(group_name, [node | rest]) do
-    try do
-      case GenServer.call({__MODULE__, node}, {:get, group_name}) do
-        {:ok, group_status} ->
-          update(group_status)
+  defp do_poll(group_name, []) do
+    Logger.warning("[MemberCache] can't reach any members from group #{inspect group_name}")
+  end
 
-        :not_found ->
-          do_poll(group_name, rest)
-      end
-    catch :exit, _e ->
-      do_poll(group_name, rest)
+  defp do_poll(group_name, [node | rest]) do
+    case :rpc.call(node, __MODULE__, :get, [group_name]) do
+      {:ok, group_status} ->
+        remote_update(group_status)
+
+      _ ->
+        do_poll(group_name, rest)
     end
   end
 

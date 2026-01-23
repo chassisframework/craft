@@ -138,7 +138,7 @@ defmodule Craft.Consensus.State.LeaderState do
         state
       end
 
-    MemberCache.update(state)
+    MemberCache.leader_update(state)
 
     if notify_machine? do
       if state.lease_expires_at && !state.leader_state.waiting_for_lease do

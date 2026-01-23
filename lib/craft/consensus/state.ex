@@ -155,9 +155,16 @@ defmodule Craft.Consensus.State do
     %{state | persistence: Persistence.release_buffer(state.persistence)}
   end
 
-  defp update_cache(%__MODULE__{} = state) do
-    MemberCache.update(state)
+  defp update_cache(%__MODULE__{state: :leader} = state) do
+    MemberCache.leader_update(state)
     MemberCache.set_leader_ready(state.name, false)
+
+    state
+  end
+
+  defp update_cache(%__MODULE__{} = state) do
+    MemberCache.non_leader_update(state)
+    MemberCache.set_leader_ready(state.name, nil)
 
     state
   end
