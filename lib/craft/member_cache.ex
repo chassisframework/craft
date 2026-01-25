@@ -78,7 +78,7 @@ defmodule Craft.MemberCache do
   # follower
   def remote_update(%GroupStatus{leader: leader, members: members} = group_status) when is_map_key(members, node()) and not is_nil(leader) do
     local_members = :ets.lookup_element(__MODULE__, group_status.group_name, index(:members))
-    members = put_in(members[node()].log_index, local_members[node()].log_index)
+    members = put_in(members, [node(), :log_index], local_members[node()][:log_index])
 
     elements = [
       {index(:leader_ready), group_status.leader_ready},
