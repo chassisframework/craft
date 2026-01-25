@@ -76,7 +76,7 @@ defmodule Craft.MemberCache do
 
   @doc false
   # follower
-  def remote_update(%GroupStatus{members: members} = group_status) when is_map_key(members, node()) do
+  def remote_update(%GroupStatus{leader: leader, members: members} = group_status) when is_map_key(members, node()) and not is_nil(leader) do
     local_members = :ets.lookup_element(__MODULE__, group_status.group_name, index(:members))
     members = put_in(members[node()].log_index, local_members[node()].log_index)
 
@@ -92,7 +92,7 @@ defmodule Craft.MemberCache do
   end
 
   # client
-  def remote_update(%GroupStatus{} = group_status) do
+  def remote_update(%GroupStatus{leader: leader} = group_status) when not is_nil(leader) do
     elements = [
       {index(:leader_ready), group_status.leader_ready},
       {index(:lease_holder), group_status.lease_holder},
@@ -105,6 +105,8 @@ defmodule Craft.MemberCache do
     true = :ets.update_element(__MODULE__, group_status.group_name, elements)
   end
 
+  def remote_update(_group_status), do: :noop
+
   @doc false
   def non_leader_update(%ConsensusState{} = state) do
     if :ets.update_element(__MODULE__, state.name, {index(:leader), state.leader_id}) do
@@ -113,7 +115,7 @@ defmodule Craft.MemberCache do
       members = :ets.lookup_element(__MODULE__, state.name, index(:members))
       members =
         if members[node()] do
-          put_in(members[node()].log_index, latest_index)
+          put_in(members, [node(), :log_index], latest_index)
         else
           %{node() => %{log_index: latest_index}}
         end
