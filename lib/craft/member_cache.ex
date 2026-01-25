@@ -243,8 +243,10 @@ defmodule Craft.MemberCache do
   end
 
   defp do_poll(group_name, []) do
-    Logger.warning("[MemberCache] can't reach any members from group #{inspect group_name}")
+    Logger.warning("[MemberCache] can't get any info for group #{inspect group_name}")
   end
+
+  defp do_poll(group_name, [node | rest]) when node == node(), do: do_poll(group_name, rest)
 
   defp do_poll(group_name, [node | rest]) do
     case :rpc.call(node, __MODULE__, :get, [group_name]) do
