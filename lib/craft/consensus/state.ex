@@ -205,12 +205,14 @@ defmodule Craft.Consensus.State do
         state
       end
 
-    with true <- state.machine.__craft_mutable__(),
-         {_index, {path, _}} <- state.snapshot do
-      Configuration.data_dir()
-      |> Path.join(path)
-      |> File.rm_rf()
-    end
+    Task.async(fn ->
+      with true <- state.machine.__craft_mutable__(),
+           {_index, {path, _}} <- state.snapshot do
+        Configuration.data_dir()
+        |> Path.join(path)
+        |> File.rm_rf()
+      end
+    end)
 
     %{state | snapshot: {index, path_or_content}, persistence: persistence}
   end

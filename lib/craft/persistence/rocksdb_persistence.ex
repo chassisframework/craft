@@ -16,7 +16,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
   @metadata_column_family {~c"metadata", []}
 
   defmodule WriteBuffer do
-    defstruct [:batch, :index]
+    defstruct [:batch, :index, :any_log_changes?]
 
     def new(state) do
       {:ok, batch} = :rocksdb.batch()
@@ -103,6 +103,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
   @impl true
   def buffer_append(%__MODULE__{} = state, %_struct{} = entry) do
     write_buffer = state.write_buffer || WriteBuffer.new(state)
+    write_buffer = %{write_buffer | any_log_changes?: true}
     state = %{state | write_buffer: write_buffer}
 
     index = write_buffer.index + 1
@@ -116,6 +117,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
   @impl true
   def buffer_rewind(%__MODULE__{} = state, index) do
     write_buffer = state.write_buffer || WriteBuffer.new(state)
+    write_buffer = %{write_buffer | any_log_changes?: true}
     state = %{state | write_buffer: write_buffer}
 
     end_index = max(state.latest_index, write_buffer.index)
@@ -145,9 +147,14 @@ defmodule Craft.Persistence.RocksDBPersistence do
       # TODO: better log
       Logger.debug("wrote batch log entries", logger_metadata(trace: :wrote_batch))
 
-      state
-      |> release_buffer()
-      |> cache_index_and_term_bounds()
+      state =
+        if state.write_buffer.any_log_changes? do
+          cache_index_and_term_bounds(state)
+        else
+          state
+        end
+
+      release_buffer(state)
     else
       state
     end

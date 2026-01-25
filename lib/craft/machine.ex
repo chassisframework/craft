@@ -64,7 +64,6 @@ defmodule Craft.Machine do
       :global_clock,
       :last_quorum_at,
       :snapshotter_pid, # pathalogical mutex to serialize snapshot-taking
-      :last_command_at, # used to determine quiescent period in write-optimized mode
       commit_index: 0,
       # we need to wait for the section 5.4.2 entry to commit before servicing client requests
       # boolean | {:waiting, log_index}
@@ -392,6 +391,8 @@ defmodule Craft.Machine do
         if state.commit_index > state.last_applied do
           Logger.debug("applying outstanding commands", logger_metadata(trace: {:query, :applying_commands, from, query}))
           apply_commands(state, unapplied_entries_by_type(state)[CommandEntry] || [])
+        else
+          state
         end
 
       Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
@@ -418,6 +419,8 @@ defmodule Craft.Machine do
       if state.commit_index > state.last_applied do
         Logger.debug("applying outstanding commands", logger_metadata(trace: {:query, :applying_commands, from, query}))
         apply_commands(state, unapplied_entries_by_type(state)[CommandEntry] || [])
+      else
+        state
       end
 
     Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :quorum_read, from, query}))
@@ -520,7 +523,7 @@ defmodule Craft.Machine do
       {:ok, index} ->
         Logger.debug("sent command to consensus", logger_metadata(trace: {:command, from, command, async_caller}))
 
-        state = %{state | client_commands: Map.put(state.client_commands, index, {from, async_caller}), last_command_at: :erlang.monotonic_time()}
+        state = %{state | client_commands: Map.put(state.client_commands, index, {from, async_caller})}
 
         if async_caller do
           {_pid, ref} = from

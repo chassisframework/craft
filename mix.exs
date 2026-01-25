@@ -30,7 +30,7 @@ defmodule Craft.MixProject do
 
   def application do
     [
-      extra_applications: [:logger, :crypto],
+      extra_applications: [:logger, :crypto, :observer, :wx],
       mod: {Craft.Application, []}
     ]
   end
