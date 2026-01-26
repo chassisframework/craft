@@ -274,7 +274,7 @@ defmodule Craft.Raft do
         else
           MemberCache.update_leader(name, leader)
 
-          do_leader_redirect(name, leader, members, func, previous_redirects)
+          do_leader_redirect(name, leader, members, func, MapSet.put(previous_redirects, leader))
         end
 
       reply ->
