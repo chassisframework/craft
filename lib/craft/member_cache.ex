@@ -117,7 +117,7 @@ defmodule Craft.MemberCache do
         if members[node()] do
           put_in(members, [node(), :log_index], latest_index)
         else
-          %{node() => %{log_index: latest_index}}
+         Map.put(members, node(), %{log_index: latest_index})
         end
 
       :ets.update_element(__MODULE__, state.name, {index(:members), members})

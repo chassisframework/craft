@@ -396,8 +396,8 @@ defmodule Craft.Machine do
   end
   def handle_cast(:idle, state), do: {:noreply, %{state | idle: true}}
 
-  def handle_cast(:maybe_do_idle_work, %State{idle: false}), do: :noop
-  def handle_cast(:maybe_do_idle_work, state), do: handle_cast(:idle, state)
+  def handle_cast(:maybe_do_idle_work, %State{idle: true} = state), do: handle_cast(:idle, state)
+  def handle_cast(:maybe_do_idle_work, state), do: {:noreply, state}
 
   #
   # the leader handles linearizable queries slightly differently, depending on if leases are enabled:
@@ -620,7 +620,7 @@ defmodule Craft.Machine do
         end
       end
 
-    {:reply, {:ok, snapshot}, %{state | last_applied: last_applied, private: private}}
+    {:reply, {:ok, snapshot}, %{state | last_applied: last_applied, commit_index: last_applied, private: private}}
   end
 
   # delete on-disk machine files etc...
@@ -650,7 +650,7 @@ defmodule Craft.Machine do
         {private, last_applied}
       end
 
-    {:reply, :ok, %{state | private: private, last_applied: last_applied}}
+    {:reply, :ok, %{state | private: private, last_applied: last_applied, commit_index: last_applied}}
   end
 
   @impl true

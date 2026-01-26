@@ -1032,7 +1032,7 @@ defmodule Craft.Consensus do
   def leader({:call, from}, :configuration, data) do
     config =
       data
-      |> Map.take([:members, :nexus_pid])
+      |> Map.take([:members, :nexus_pid, :global_clock])
       |> Map.merge(%{machine_module: data.machine, persistence_module: data.persistence.module})
 
     {:keep_state_and_data, [{:reply, from, {:ok, config}}]}

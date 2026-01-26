@@ -75,7 +75,7 @@ defmodule Craft.Raft do
             machine: machine_module
           })
 
-        for module <- [__MODULE__, machine_module] do
+        for module <- List.flatten([__MODULE__, machine_module, opts[:global_clock] || []]) do
           {:module, ^module} = :rpc.call(node, Code, :ensure_loaded, [module])
         end
 
