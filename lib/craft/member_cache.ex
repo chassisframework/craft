@@ -17,8 +17,6 @@ defmodule Craft.MemberCache do
   alias Craft.GlobalTimestamp
   alias Craft.Persistence
 
-  require Logger
-
   defmodule GroupStatus do
     @moduledoc false
     defstruct [:group_name, :lease_holder, :leader, :leader_ready, :members, :commit_index, :current_term]
@@ -244,9 +242,7 @@ defmodule Craft.MemberCache do
     {:noreply, state}
   end
 
-  defp do_poll(group_name, []) do
-    Logger.warning("[MemberCache] can't get any info for group #{inspect group_name}")
-  end
+  defp do_poll(_group_name, []), do: :noop
 
   defp do_poll(group_name, [node | rest]) when node == node(), do: do_poll(group_name, rest)
 
