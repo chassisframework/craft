@@ -25,7 +25,7 @@ defmodule Craft.LinearizabilityTest do
   nexus_test "during leadership transfer", %{nodes: nodes, name: name, nexus: nexus} = ctx do
     %{leader: leader} = wait_until(nexus, {Stability, :all})
 
-    num_clients = 1
+    num_clients = 10
 
     clients =
       ctx
@@ -104,6 +104,50 @@ defmodule Craft.LinearizabilityTest do
       |> ParallelClients.start(num_clients, nexus)
 
     Process.sleep(3000)
+
+    history = ParallelClients.stop(clients)
+
+    assert_linearizable(history)
+  end
+
+  nexus_test "write-optimized machine", %{nodes: nodes, name: name, nexus: nexus} = ctx do
+    wait_until(nexus, {Stability, :all})
+
+    num_clients = 10
+
+    for node <- nodes do
+      Craft.switch_mode(name, node, :write_optimized)
+    end
+
+    clients =
+      ctx
+      |> random_request_fun()
+      |> ParallelClients.start(num_clients, ctx.nexus)
+
+    Process.sleep(600)
+
+    history = ParallelClients.stop(clients)
+
+    assert_linearizable(history)
+  end
+
+  nexus_test "switch to write-optimized machine", %{nodes: nodes, name: name, nexus: nexus} = ctx do
+    wait_until(nexus, {Stability, :all})
+
+    num_clients = 10
+
+    clients =
+      ctx
+      |> random_request_fun()
+      |> ParallelClients.start(num_clients, ctx.nexus)
+
+    Process.sleep(300)
+
+    for node <- nodes do
+      Craft.switch_mode(name, node, :write_optimized)
+    end
+
+    Process.sleep(300)
 
     history = ParallelClients.stop(clients)
 
