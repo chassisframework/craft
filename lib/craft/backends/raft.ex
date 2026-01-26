@@ -211,10 +211,29 @@ defmodule Craft.Raft do
     with_leader_redirect(name, &Consensus.step_down(name, &1))
   end
 
-  def switch_mode(name, node, mode, opts \\ []) do
+  def switch_mode(name, mode, opts \\ []) do
     timeout = Keyword.get(opts, :timeout, 5_000)
 
-    call_machine(name, node, {:switch_mode, mode}, timeout)
+    case MemberCache.get(name) do
+      {:ok, %GroupStatus{} = group_status} ->
+        results =
+          group_status.members
+          |> Map.keys()
+          |> Map.new(fn node ->
+            {node, call_machine(name, node, {:switch_mode, mode}, timeout)}
+          end)
+
+        if Enum.all?(results, fn {_node, result} -> result == :ok end) do
+          :ok
+        else
+          results
+        end
+
+      :not_found ->
+        Logger.error("No known nodes for group '#{inspect(name)}', have you called Craft.discover/2?")
+
+        {:error, :unknown_group}
+    end
   end
 
   defp with_leader_redirect(name, func) do

@@ -17,7 +17,7 @@ config :craft, :snapshot_server_port, 1337
 config :craft, :maximum_entries_per_heartbeat, 1_000
 
 # max log length before a compaction snapshot is triggered
-config :craft, :maximum_log_length, 100_000
+config :craft, :maximum_log_length, 10_000_000
 
 heartbeat_interval = 30 # ms
 config :craft, :heartbeat_interval, heartbeat_interval

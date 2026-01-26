@@ -171,23 +171,26 @@ defmodule Craft do
   def step_down(name), do: backend().step_down(name)
 
   @doc """
-    Switches the machine on the given `node` to the specified `mode`.
+    Switches all machines in the given group `name` to the specified `mode`.
 
     Allowed modes are: :normal | :write_optimized
 
-    A :write_optimized machine defers execution of commands until they're needed, or the system enters a quiescent period. This mode is best for write-heavy workloads or for periods of bulk ingestion.
+    In :write_optimized mode, the machine defers execution of commands until they're needed, or the system enters a quiescent period.
+    This mode is best for write-heavy workloads or for periods of bulk ingestion.
 
     - ALL commands will return `:ok`, regardless of the reply provided by the user's machine.
     - You must use `Craft.leader_ready?/1` in non-Craft components to ensure linearizability
 
-    This mode takes the user's state machine out of the write path and makes it just-in-time. It essentially turns Craft into a write-ahead log, with latent command execution,
+    This mode takes the user's state machine out of the write path and makes linearizable reads just-in-time. It essentially turns Craft into a write-ahead log, with latent command execution,
     hence why commands may only return `:ok`, indicating that replication via quorum has taken place, but not command execution.
 
-    Please note, to preserve correctness, any linearizable query will cause the leader's machine to pause and process all outstanding commands before executing the query.
+    A number of events will cause craft to process all outstanding comands:
 
-    Additionally, if an election takes place, the new leader will execute all outstanding commands before assuming leadership (to preserve section 5.4.2 correctness).
+      - A client requests a linearizable query from the leader. This is necessary to ensure correctness guarantees.
+      - An election takes place, the new leader will execute all outstanding commands before assuming leadership (to preserve section 5.4.2 correctness).
+      - The maximum log size is reached, configurable via the `[:craft, :maximum_log_length]` config key.
   """
-  def switch_mode(name, node, mode) when mode in [:normal, :write_optimized], do: backend().switch_mode(name, node, mode)
+  def switch_mode(name, mode) when mode in [:normal, :write_optimized], do: backend().switch_mode(name, mode)
 
   @doc false
   def state(name, node), do: backend().state(name, node)
