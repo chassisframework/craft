@@ -40,6 +40,7 @@ defmodule Craft.Persistence do
   #   lease needs to be fsync'd with every AppendEntries, fsyncs are expensive, this adds it to the buffer so we only have to do one:
   #   1. on the leader when it exteneds its lease before a heartbeat
   #   2. on a follower when it updates the lease as part of AppendEntries receipt
+  @callback any_buffered_log_writes?(any()) :: boolean()
   @callback buffer_append(any(), entry()) :: {any(), index :: integer()}
   @callback buffer_rewind(any(), index :: integer()) :: any()
   @callback buffer_metadata_put(any(), metadata :: struct()) :: any()
@@ -150,6 +151,10 @@ defmodule Craft.Persistence do
 
   def fetch_between(%__MODULE__{module: module, private: private}, index_range) do
     module.fetch_between(private, index_range)
+  end
+
+  def any_buffered_log_writes?(%__MODULE__{module: module, private: private}) do
+    module.any_buffered_log_writes?(private)
   end
 
   def buffer_append(%__MODULE__{module: module, private: private} = persistence, entry) do

@@ -101,6 +101,11 @@ defmodule Craft.Persistence.RocksDBPersistence do
   end
 
   @impl true
+  def any_buffered_log_writes?(%__MODULE__{} = state) do
+    !!(state.write_buffer && state.write_buffer.any_log_changes?)
+  end
+
+  @impl true
   def buffer_append(%__MODULE__{} = state, %_struct{} = entry) do
     write_buffer = state.write_buffer || WriteBuffer.new(state)
     write_buffer = %{write_buffer | any_log_changes?: true}

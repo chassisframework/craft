@@ -1049,7 +1049,9 @@ defmodule Craft.Consensus do
 
   defp heartbeat(%State{} = state) do
     time(fn ->
-      state = LeaderState.QuorumStatus.start_new_round(state)
+      state = LeaderState.QuorumStatus.start_new_round(state, not Persistence.any_buffered_log_writes?(state.persistence))
+
+      LeaderState.QuorumStatus.idle?(state) |> IO.inspect
 
       state =
         if state.global_clock do
