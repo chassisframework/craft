@@ -506,6 +506,8 @@ defmodule Craft.Consensus do
       if Enum.empty?(append_entries.entries) do
         {true, data}
       else
+        data = put_in(data.notified_machine_of_idleness, false)
+
         case Persistence.fetch(data.persistence, append_entries.prev_log_index) do
           {:ok, %{term: ^prev_log_term}} ->
             rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
@@ -567,6 +569,20 @@ defmodule Craft.Consensus do
 
       Machine.quorum_reached(data, log_too_long)
     end
+
+    # we do this after notifying the machine that quorum has been reached so it can bump the commit index
+    data =
+      if Enum.empty?(append_entries.entries) do
+        if !data.notified_machine_of_idleness do
+          Machine.notify_idle(data)
+
+          put_in(data.notified_machine_of_idleness, true)
+        else
+          data
+        end
+      else
+        put_in(data.notified_machine_of_idleness, false)
+      end
 
     MemberCache.non_leader_update(data)
 
@@ -1051,7 +1067,18 @@ defmodule Craft.Consensus do
     time(fn ->
       state = LeaderState.QuorumStatus.start_new_round(state, not Persistence.any_buffered_log_writes?(state.persistence))
 
-      LeaderState.QuorumStatus.idle?(state) |> IO.inspect
+      state =
+        if LeaderState.QuorumStatus.idle?(state) do
+          if !state.notified_machine_of_idleness do
+            Machine.notify_idle(state)
+
+            put_in(state.notified_machine_of_idleness, true)
+          else
+            state
+          end
+        else
+          put_in(state.notified_machine_of_idleness, false)
+        end
 
       state =
         if state.global_clock do

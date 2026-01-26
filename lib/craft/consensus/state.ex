@@ -30,6 +30,7 @@ defmodule Craft.Consensus.State do
     :election, # lonely and candidate
     :leadership_transfer_request_id, # candidate only
     :incoming_snapshot_transfer, # receiving_snapshot only
+    :notified_machine_of_idleness,
 
     :nexus_pid
   ]

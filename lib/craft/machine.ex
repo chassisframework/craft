@@ -64,6 +64,7 @@ defmodule Craft.Machine do
       :global_clock,
       :last_quorum_at,
       :snapshotter_pid, # pathalogical mutex to serialize snapshot-taking
+      :idle,
       commit_index: 0,
       # we need to wait for the section 5.4.2 entry to commit before servicing client requests
       # boolean | {:waiting, log_index}
@@ -114,6 +115,12 @@ defmodule Craft.Machine do
     state.name
     |> lookup(__MODULE__)
     |> GenServer.call(:lease_taken)
+  end
+
+  def notify_idle(%ConsensusState{} = state) do
+    state.name
+    |> lookup(__MODULE__)
+    |> GenServer.cast(:idle)
   end
 
   def state(name) do
@@ -362,8 +369,35 @@ defmodule Craft.Machine do
         state
       end
 
-    {:noreply, state}
+    # if the commit index was bumped, we're probably not idle
+    idle = new_commit_index > state.last_applied
+
+    {:noreply, %{state | idle: idle}}
   end
+
+  # do a chunk of idle work, then re-check to see if still idle
+  #
+  # leader is idle (past N quorum rounds had no log writes)
+  # follower is idle when an empty heartbeat is received
+  @impl true
+  def handle_cast(:idle, %State{mode: :write_optimized} = state) do
+    log = Consensus.get_log(state.name)
+    end_range = min(state.commit_index, state.last_applied + Consensus.maximum_entries_per_heartbeat())
+
+    unapplied_entries = entries_by_type(log, state.last_applied+1..end_range//1)[CommandEntry] || []
+    state = apply_commands(state, unapplied_entries)
+    Logger.debug("idle, applying chunk of #{Enum.count(unapplied_entries)} outstanding commands", logger_metadata(trace: {:idle, :applying_commands, Enum.count(unapplied_entries)}))
+
+    if end_range < state.commit_index do
+      GenServer.cast(self(), :maybe_do_idle_work)
+    end
+
+    {:noreply, %{state | idle: true}}
+  end
+  def handle_cast(:idle, state), do: {:noreply, %{state | idle: true}}
+
+  def handle_cast(:maybe_do_idle_work, %State{idle: false}), do: :noop
+  def handle_cast(:maybe_do_idle_work, state), do: handle_cast(:idle, state)
 
   #
   # the leader handles linearizable queries slightly differently, depending on if leases are enabled:
