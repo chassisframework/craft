@@ -25,12 +25,14 @@ defmodule Craft do
   @type query() :: any()
   @type log_index() :: non_neg_integer()
 
-  case Application.compile_env(:craft, :backend, __MODULE__.Raft) do
-    {module, _args} ->
-      def backend, do: unquote(module)
+  def backend do
+    case Application.get_env(:craft, :backend, __MODULE__.Raft) do
+      {module, _args} ->
+        module
 
-    module ->
-      def backend, do: unquote(module)
+      module when is_atom(module) and not is_nil(module) ->
+        module
+    end
   end
 
   @doc """

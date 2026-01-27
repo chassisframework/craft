@@ -13,25 +13,13 @@ defmodule Craft.Application do
       {Task.Supervisor, name: Craft.SnapshotServer.Supervisor},
       {DynamicSupervisor, [strategy: :one_for_one, name: Craft.Supervisor]},
       {Registry, keys: :unique, name: Craft.Registry},
-      Craft.MemberCache
+      Craft.MemberCache,
+      Craft.Sandbox.Manager
     ]
-
-    # using Craft.backend/0 causes a typing error, annoying.
-    backend_children =
-      case Application.get_env(:craft, :backend) do
-        {Craft.Sandbox, _args} ->
-          [Craft.Sandbox.Manager]
-
-        Craft.Sandbox ->
-          [Craft.Sandbox.Manager]
-
-        _ ->
-          []
-      end
 
     # Craft.TelemetryListener.attach()
 
-    {:ok, pid} = Supervisor.start_link(children ++ backend_children, strategy: :rest_for_one)
+    {:ok, pid} = Supervisor.start_link(children, strategy: :rest_for_one)
 
     # lazy-load in dev, annoying.
     {:module, _} = Code.ensure_loaded(Craft.backend())
