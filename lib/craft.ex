@@ -50,7 +50,7 @@ defmodule Craft do
   def stop_group(name), do: backend().stop_group(name)
 
   @doc "Starts the local member with the given name"
-  def start_member(name, opts \\ []), do: backend().start_member(name, opts)
+  def start_member(name), do: backend().start_member(name)
 
   @doc "Stops the local member with the given name"
   def stop_member(name), do: backend().stop_member(name)

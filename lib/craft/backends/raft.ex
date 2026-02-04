@@ -152,7 +152,35 @@ defmodule Craft.Raft do
     GenServer.call(machine_pid, {{:query_reply, query_time, reply}, query_from})
   end
 
-  defdelegate start_member(name, opts \\ []), to: Craft.MemberSupervisor, as: :start_existing_member
+  def start_member(name) do
+    case Craft.MemberSupervisor.start_existing_member(name) do
+      {:error, :not_found} ->
+        {:ok, config} = with_leader_redirect(name, &configuration(name, &1))
+
+        {%{
+          members: members,
+          machine_module: machine_module
+        }, opts} = Map.split(config, [:members, :machine_module])
+
+        opts =
+          Map.merge(opts, %{
+            nodes: members.voting_nodes,
+            machine: machine_module
+          })
+
+        for module <- List.flatten([__MODULE__, machine_module, opts[:global_clock] || []]) do
+          {:module, ^module} = Code.ensure_loaded(module)
+        end
+
+        # The nodes we provide to the new member here will eventually be overwritten when
+        # the new member processes the MembershipEntry as it catches up to the leader.
+        Craft.MemberSupervisor.start_member(name, opts)
+
+      {:ok, pid} ->
+        {:ok, pid}
+    end
+  end
+
   defdelegate stop_member(name), to: Craft.MemberSupervisor
   defdelegate discover(name, nodes), to: MemberCache
   defdelegate holding_lease?(name), to: MemberCache
