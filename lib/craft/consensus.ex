@@ -1136,21 +1136,35 @@ defmodule Craft.Consensus do
     else
       entry_index = Persistence.latest_index(data.persistence) + 1
 
-      data =
+      {reply, data} =
         case membership_change do
           :add_member ->
-            LeaderState.add_node(data, node, entry_index)
+            if node in Members.all_nodes(data.members) do
+              {{:error, :already_joined}, data}
+            else
+              {{:ok, entry_index}, LeaderState.add_node(data, node, entry_index)}
+            end
 
           :remove_member ->
-            LeaderState.remove_node(data, node, entry_index)
+            if node not in Members.all_nodes(data.members) do
+              {{:error, :unknown_member}, data}
+            else
+              {{:ok, entry_index}, LeaderState.remove_node(data, node, entry_index)}
+            end
         end
 
-      MemberCache.leader_update(data)
+      case reply do
+        {:ok, _} ->
+          MemberCache.leader_update(data)
 
-      entry = %MembershipEntry{term: data.current_term, members: data.members}
-      persistence = Persistence.append(data.persistence, entry)
+          entry = %MembershipEntry{term: data.current_term, members: data.members}
+          persistence = Persistence.append(data.persistence, entry)
 
-      {:keep_state, %{data | persistence: persistence}, [{:reply, from, {:ok, entry_index}}]}
+          {:keep_state, %{data | persistence: persistence}, [{:reply, from, reply}]}
+
+        {:error, _} ->
+          {:keep_state_and_data, [{:reply, from, reply}]}
+      end
     end
   end
 
