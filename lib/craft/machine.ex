@@ -45,6 +45,7 @@ defmodule Craft.Machine do
     @callback prepare_to_receive_snapshot(private()) :: {:ok, data_dir(), private()}
     @callback receive_snapshot(private()) :: {:ok, private()}
     @callback backup(to_directory :: Path.t(), private()) :: :ok | {:error, any()}
+    @callback close(private()) :: private()
   end
 
   defmodule LogStoredMachine do
@@ -620,6 +621,23 @@ defmodule Craft.Machine do
         end
       end
 
+    me = self()
+    # avoids passing `state` into the cleaner-upper process
+    module = state.module
+    spawn_link(fn ->
+      Process.flag(:trap_exit, true)
+
+      receive do
+        {:EXIT, ^me, _reason} -> 
+          if function_exported?(module, :close, 1) do
+            module.close(private)
+          end
+
+        msg ->
+          Logger.warning("machine cleaner-upper ignored an unknown message: #{inspect msg}")
+      end
+    end)
+
     {:reply, {:ok, snapshot}, %{state | last_applied: last_applied, commit_index: last_applied, private: private}}
   end
 
@@ -682,6 +700,7 @@ defmodule Craft.Machine do
 
   @impl true
   def handle_call(:state, _from, state) do
+    raise "shitballs"
     machine_state =
       if function_exported?(state.module, :dump, 1) do
         state.module.dump(state.private)

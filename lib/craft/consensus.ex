@@ -145,6 +145,21 @@ defmodule Craft.Consensus do
 
     data = State.new(args.name, args[:nodes], args.persistence, args.machine, args[:global_clock], args[:nexus_pid])
 
+    me = self()
+    # avoids passing `state` into the cleaner-upper process
+    persistence = data.persistence
+    spawn_link(fn ->
+      Process.flag(:trap_exit, true)
+
+      receive do
+        {:EXIT, ^me, _reason} -> 
+          Persistence.close(persistence)
+
+        msg ->
+          Logger.warning("consensus cleaner-upper ignored an unknown message: #{inspect msg}")
+      end
+    end)
+
     if args[:manual_start] do
       {:ok, :waiting_to_start, data}
     else
@@ -1046,10 +1061,6 @@ defmodule Craft.Consensus do
     Logger.debug("ignoring #{inspect type} message #{inspect msg}", logger_metadata(data, trace: {:ignored_msg, msg}))
 
     :keep_state_and_data
-  end
-
-  def terminate(_reason, _state, data) do
-    Persistence.close(data.persistence)
   end
 
   defp become_lonely_timeout do
