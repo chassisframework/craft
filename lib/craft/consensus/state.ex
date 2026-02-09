@@ -10,8 +10,6 @@ defmodule Craft.Consensus.State do
   alias Craft.Persistence
   alias Craft.Persistence.Metadata
 
-  require Logger
-
   defstruct [
     {:state, :lonely},
     :name,

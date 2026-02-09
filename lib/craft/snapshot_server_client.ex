@@ -5,8 +5,6 @@ defmodule Craft.SnapshotServerClient do
 
   alias Craft.SnapshotServer.RemoteFile
 
-  require Logger
-
   defmodule State do
     defstruct [
       :snapshot_transfer,

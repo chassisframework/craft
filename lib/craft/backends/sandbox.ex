@@ -362,7 +362,7 @@ defmodule Craft.Sandbox do
 
   def handle_call({:backup, name, path}, state) do
     if machine_state = state[name] do
-      machine_state.backup(path, machine_state.private)
+      machine_state.module.backup(path, machine_state.private)
 
       {:reply, :ok, state}
     else

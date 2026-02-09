@@ -1,6 +1,4 @@
 defmodule Craft.TelemetryListener do
-  require Logger
-
   def handle_event(event, measurements, metadata, _config) do
     IO.inspect("#{inspect event} #{inspect measurements}", label: node())
   end

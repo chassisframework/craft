@@ -5,8 +5,6 @@ defmodule Craft.Message.AppendEntries do
   alias Craft.Persistence
   alias Craft.Message.AppendEntries.LeadershipTransfer
 
-  require Logger
-
   defstruct [
     :term,
     :leader_id,

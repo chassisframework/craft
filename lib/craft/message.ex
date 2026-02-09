@@ -7,8 +7,6 @@ defmodule Craft.Message do
   alias Craft.Message.InstallSnapshot
   alias Craft.Message.RequestVote
 
-  require Logger
-
   def request_vote(state, opts \\ []) do
     request_vote = RequestVote.new(state, opts)
 
@@ -47,6 +45,8 @@ defmodule Craft.Message do
   end
 
   if Mix.env() == :test do
+    require Logger
+
     def send_message(message, to_node, state) do
       import Craft.Tracing, only: [logger_metadata: 2]
       # the nexus is listening to the logger, when it sees a `:sent_msg` trace, it does the actual send itself

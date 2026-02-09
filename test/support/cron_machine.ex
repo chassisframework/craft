@@ -1,8 +1,6 @@
 defmodule Craft.CronMachine do
   use Craft.Machine, mutable: false
 
-  require Logger
-
   # @run_at ~T[00:00:00]
   @run_at Time.utc_now() |> Time.add(20, :second)
 
