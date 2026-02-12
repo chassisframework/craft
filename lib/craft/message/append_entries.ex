@@ -5,6 +5,8 @@ defmodule Craft.Message.AppendEntries do
   alias Craft.Persistence
   alias Craft.Message.AppendEntries.LeadershipTransfer
 
+  import Craft.Tracing, only: [telemetry: 3]
+
   defstruct [
     :term,
     :leader_id,
@@ -39,7 +41,7 @@ defmodule Craft.Message.AppendEntries do
     index_range = next_index..max_index//1
     entries = Persistence.fetch_between(state.persistence, index_range)
 
-    :telemetry.execute([:craft, :heartbeat, :append_entries], %{num_entries: Enum.count(index_range)}, %{group_name: state.name, leader: node(), follower: to_node})
+    telemetry([:craft, :heartbeat, :append_entries], %{num_entries: Enum.count(index_range)}, %{leader: node(), follower: to_node})
 
     leadership_transfer =
       case state.leader_state.leadership_transfer do

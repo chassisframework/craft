@@ -1138,7 +1138,7 @@ defmodule Craft.Consensus do
       state
     end,
     [:craft, :heartbeat],
-    %{group_name: state.name, node: node()})
+    %{name: state.name})
   end
 
   defp handle_command({membership_change, node}, from, data) when membership_change in [:add_member, :remove_member] do

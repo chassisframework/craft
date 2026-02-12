@@ -352,7 +352,7 @@ defmodule Craft.Machine do
                 end
               end,
               [:craft, :machine, :user, :snapshot],
-              %{group_name: state.name, node: node()})
+              %{})
             end)
 
             %{state | snapshotter_pid: snapshotter_pid}
@@ -442,7 +442,7 @@ defmodule Craft.Machine do
         end
       end,
       [:craft, :machine, :user, :handle_query],
-      %{group_name: state.name, node: node(), lease_read: true, linearizable: true})
+      %{lease_read: true, linearizable: true})
     else
       {:reply, {:error, :not_leaseholder}, state}
     end
@@ -473,7 +473,7 @@ defmodule Craft.Machine do
         end
       end,
       [:craft, :machine, :user, :handle_query],
-      %{group_name: state.name, node: node(), quorum_read: true, linearizable: true})
+      %{quorum_read: true, linearizable: true})
 
     {:noreply, state}
   end
@@ -503,7 +503,7 @@ defmodule Craft.Machine do
         end
       end,
       [:craft, :machine, :user, :handle_query],
-      %{group_name: state.name, node: node(), eventual: true})
+      %{eventual: true})
     else
       case MemberCache.get(state.name) do
         {:ok, %GroupStatus{leader: leader}} when not is_nil(leader) ->
@@ -528,7 +528,7 @@ defmodule Craft.Machine do
       end
     end,
     [:craft, :machine, :user, :handle_query],
-    %{group_name: state.name, node: node(), eventual: true})
+    %{eventual: true})
   end
 
   def handle_call({{:query_reply, query_time, reply}, query_from}, _from, state) do
@@ -736,7 +736,7 @@ defmodule Craft.Machine do
             state.module.handle_commands(commands_with_indexes, state.private)
           end,
           [:craft, :machine, :user, :handle_commands],
-          %{group_name: state.name, node: node()},
+          %{},
           %{num: Enum.count(commands_with_indexes)})
 
         state = %{state | private: private}
@@ -772,7 +772,7 @@ defmodule Craft.Machine do
               end
             end,
             [:craft, :machine, :user, :handle_command],
-            %{group_name: state.name, node: node()})
+            %{})
 
 
           state = %{state | private: private}

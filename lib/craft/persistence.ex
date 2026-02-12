@@ -6,6 +6,8 @@ defmodule Craft.Persistence do
   alias Craft.Log.MembershipEntry
   alias Craft.Log.SnapshotEntry
 
+  import Craft.Tracing, only: [time: 3]
+
   # this module is kinda like a bastardized mix of a behaviour and a protocol
   #
   # it's a behaviour in the sense that:
@@ -142,15 +144,27 @@ defmodule Craft.Persistence do
   end
 
   def fetch(%__MODULE__{module: module, private: private}, index) do
-    module.fetch(private, index)
+    time(fn ->
+      module.fetch(private, index)
+    end,
+    [:craft, :persistence, :fetch],
+    %{})
   end
 
   def fetch_from(%__MODULE__{module: module, private: private}, index) do
-    module.fetch_from(private, index)
+    time(fn ->
+      module.fetch_from(private, index)
+    end,
+    [:craft, :persistence, :fetch_from],
+    %{})
   end
 
   def fetch_between(%__MODULE__{module: module, private: private}, index_range) do
-    module.fetch_between(private, index_range)
+    time(fn ->
+      module.fetch_between(private, index_range)
+    end,
+    [:craft, :persistence, :fetch_between],
+    %{})
   end
 
   def any_buffered_log_writes?(%__MODULE__{module: module, private: private}) do
@@ -172,7 +186,11 @@ defmodule Craft.Persistence do
   end
 
   def commit_buffer(%__MODULE__{module: module, private: private} = persistence) do
-    %{persistence | private: module.commit_buffer(private)}
+    time(fn ->
+      %{persistence | private: module.commit_buffer(private)}
+    end,
+    [:craft, :persistence, :commit_buffer],
+    %{})
   end
 
   def release_buffer(%__MODULE__{module: module, private: private} = persistence) do
@@ -184,15 +202,27 @@ defmodule Craft.Persistence do
   end
 
   def rewind(%__MODULE__{module: module, private: private} = persistence, index) do
-    %{persistence | private: module.rewind(private, index)}
+    time(fn ->
+      %{persistence | private: module.rewind(private, index)}
+    end,
+    [:craft, :persistence, :rewind],
+    %{})
   end
 
   def truncate(%__MODULE__{module: module, private: private} = persistence, index, %SnapshotEntry{} = snapshot_entry) do
-    %{persistence | private: module.truncate(private, index, snapshot_entry)}
+    time(fn ->
+      %{persistence | private: module.truncate(private, index, snapshot_entry)}
+    end,
+    [:craft, :persistence, :truncate],
+    %{})
   end
 
   def reverse_find(%__MODULE__{module: module, private: private}, fun) do
-    module.reverse_find(private, fun)
+    time(fn ->
+      module.reverse_find(private, fun)
+    end,
+    [:craft, :persistence, :reverse_find],
+    %{})
   end
 
   def reduce_while(%__MODULE__{module: module, private: private}, initial_value, fun) do

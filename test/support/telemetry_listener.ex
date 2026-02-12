@@ -5,17 +5,24 @@ defmodule Craft.TelemetryListener do
 
   def attach do
     metrics = [
-      [:craft, :heartbeat],
       [:craft, :heartbeat, :append_entries],
       [:craft, :heartbeat, :reply, :duplicate],
       [:craft, :heartbeat, :reply, :missed_deadline],
       [:craft, :heartbeat, :reply, :out_of_order],
       [:craft, :heartbeat, :reply, :round_expired],
-      [:craft, :machine, :user, :snapshot],
-      [:craft, :machine, :user, :handle_query],
+      [:craft, :heartbeat],
       [:craft, :machine, :user, :handle_command],
       [:craft, :machine, :user, :handle_commands],
-      [:craft, :quorum, :succeeded],
+      [:craft, :machine, :user, :handle_query],
+      [:craft, :machine, :user, :snapshot],
+      [:craft, :persistence, :commit_buffer],
+      [:craft, :persistence, :fetch],
+      [:craft, :persistence, :fetch_between],
+      [:craft, :persistence, :fetch_from],
+      [:craft, :persistence, :reverse_find],
+      [:craft, :persistence, :rewind],
+      [:craft, :persistence, :truncate],
+      [:craft, :quorum, :succeeded]
     ]
 
     for metric <- metrics do

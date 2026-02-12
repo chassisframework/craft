@@ -5,7 +5,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
 
   require Logger
 
-  import Craft.Tracing, only: [logger_metadata: 1]
+  import Craft.Tracing, only: [logger_metadata: 1, telemetry: 3]
 
   @num_rounds 100
   @rounds_until_idle 10
@@ -75,14 +75,14 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
         if round.heartbeats[results.from] do
           if results.heartbeat_sent_at == round.round_sent_at do
             Logger.warning("duplicate heartbeat reply received: #{inspect results}, ignoring.", logger_metadata(state))
-            :telemetry.execute([:craft, :heartbeat, :reply, :duplicate],
-                               %{},
-                               %{group_name: state.name, leader: node(), follower: results.from})
+            telemetry([:craft, :heartbeat, :reply, :duplicate],
+                      %{},
+                      %{leader: node(), follower: results.from})
           else
             Logger.warning("out-of-order heartbeat reply received: #{inspect results}, ignoring.", logger_metadata(state))
-            :telemetry.execute([:craft, :heartbeat, :reply, :out_of_order],
-                               %{},
-                               %{group_name: state.name, leader: node(), follower: results.from})
+            telemetry([:craft, :heartbeat, :reply, :out_of_order],
+                      %{},
+                      %{leader: node(), follower: results.from})
           end
 
           {:halt, {false, false, false, quorum_status}}
@@ -98,18 +98,18 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
 
               Logger.warning("heartbeat reply from lagging follower, lag=#{lag}ms: #{inspect results}.", logger_metadata(state))
 
-              :telemetry.execute([:craft, :heartbeat, :reply, :missed_deadline],
-                                 %{lag_ms: lag},
-                                 %{group_name: state.name, leader: node(), follower: results.from})
+              telemetry([:craft, :heartbeat, :reply, :missed_deadline],
+                        %{lag_ms: lag},
+                        %{leader: node(), follower: results.from})
             end
 
             quorum_status =
               if round_is_most_recent_and_just_succeeded? do
                 duration = received_at - round.round_sent_at
                 breathing_room = Consensus.heartbeat_interval() - duration
-                :telemetry.execute([:craft, :quorum, :succeeded],
-                                   %{duration_ms: duration, breathing_room_ms: breathing_room},
-                                   %{group_name: state.name, leader: node()})
+                telemetry([:craft, :quorum, :succeeded],
+                          %{duration_ms: duration, breathing_room_ms: breathing_room},
+                          %{leader: node()})
 
                 %{quorum_status | latest_successful_round_sent_at: results.heartbeat_sent_at}
               else
@@ -128,9 +128,9 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
     case result do
       {_, []} ->
         Logger.warning("expired quorum round in heartbeat reply: #{inspect results}, ignoring.", logger_metadata(state))
-        :telemetry.execute([:craft, :heartbeat, :reply, :round_expired],
-                           %{},
-                           %{group_name: state.name, leader: node(), follower: results.from})
+        telemetry([:craft, :heartbeat, :reply, :round_expired],
+                  %{},
+                  %{leader: node(), follower: results.from})
 
         {false, false, false, state}
 

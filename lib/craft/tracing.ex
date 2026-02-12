@@ -33,8 +33,19 @@ defmodule Craft.Tracing do
   def time(fun, metric, meta, measurements \\ %{}) do
     {duration_ms, return} = :timer.tc(fun, :millisecond)
 
-    :telemetry.execute(metric, Map.merge(measurements, %{duration_ms: duration_ms}), meta)
+    telemetry(metric, Map.merge(measurements, %{duration_ms: duration_ms}), meta)
 
     return
+  end
+
+  def telemetry(metric, measurements, meta) do
+    meta =
+      Logger.metadata()
+      |> Keyword.take([:name])
+      |> Enum.into(%{})
+      |> Map.merge(meta)
+      |> Map.put(:node, node())
+
+    :telemetry.execute(metric, measurements, meta)
   end
 end
