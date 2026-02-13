@@ -38,7 +38,8 @@ defmodule Craft.MixProject do
   defp deps do
     [
       {:rocksdb, "~> 2.5.0"},
-      {:telemetry, "~> 1.0"}
+      {:telemetry, "~> 1.0"},
+      # {:hertz, path: "/Users/mikes/repos/hertz", only: :dev}
     ]
   end
 

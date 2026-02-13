@@ -37,7 +37,7 @@ defmodule Craft.Consensus do
 
   require Logger
 
-  import Craft.Tracing, only: [logger_metadata: 1, logger_metadata: 2, time: 3]
+  import Craft.Tracing, only: [logger_metadata: 1, logger_metadata: 2, time: 3, telemetry: 3]
   import Craft.Application, only: [via: 2]
 
   @behaviour :gen_statem
@@ -216,6 +216,8 @@ defmodule Craft.Consensus do
   def lonely(:enter, _previous_state, data) do
     data = State.become_lonely(data)
 
+    telemetry([:craft, :role_change, :lonely], %{}, %{})
+
     Machine.update_role(data)
 
     Logger.info("became lonely", logger_metadata(data, trace: {:became, :lonely}))
@@ -353,6 +355,8 @@ defmodule Craft.Consensus do
   def receiving_snapshot(:enter, _previous_state, data) do
     data = State.become_receiving_snapshot(data)
 
+    telemetry([:craft, :role_change, :receiving_snapshot], %{}, %{})
+
     Machine.update_role(data)
 
     Logger.info("became receiving_snapshot follower", logger_metadata(data, event: {:became, :receiving_snapshot}))
@@ -459,6 +463,8 @@ defmodule Craft.Consensus do
 
   def follower(:enter, _previous_state, data) do
     data = State.become_follower(data)
+
+    telemetry([:craft, :role_change, :follower], %{}, %{})
 
     Machine.update_role(data)
 
@@ -656,6 +662,8 @@ defmodule Craft.Consensus do
   def candidate(:enter, :follower, %State{leadership_transfer_request_id: id} = data) when is_tuple(id) or id == :internal do
     data = State.become_candidate(data)
 
+    telemetry([:craft, :role_change, :candidate], %{}, %{})
+
     Machine.update_role(data)
 
     Logger.info("became candidate, initiating leadership transfer election", logger_metadata(data, trace: {:became, :candidate}))
@@ -668,6 +676,8 @@ defmodule Craft.Consensus do
 
   def candidate(:enter, _previous_state, data) do
     data = State.become_candidate(data)
+
+    telemetry([:craft, :role_change, :candidate], %{}, %{})
 
     Machine.update_role(data)
 
@@ -805,6 +815,8 @@ defmodule Craft.Consensus do
   def leader(:enter, _previous_state, data) do
     data = State.become_leader(data)
 
+    telemetry([:craft, :role_change, :leader], %{}, %{})
+
     #
     # when the cluster starts up, each node is explicitly given the same configuration to
     # hold in-memory to bootstrap the cluster.
@@ -866,9 +878,13 @@ defmodule Craft.Consensus do
     if data.leader_state.quorum_status.latest_successful_round_sent_at < :erlang.monotonic_time(:millisecond) - checkquorum_interval() do
       Logger.info("unable to make quorum, stepping down.", logger_metadata(data, trace: {:check_quorum, :failed}))
 
+      telemetry([:craft, :check_quorum, :failed], %{}, %{})
+
       {:next_state, :lonely, data}
     else
       Logger.debug("check-quorum successful", logger_metadata(data, trace: {:check_quorum, :ok}))
+
+      telemetry([:craft, :check_quorum, :succeeded], %{}, %{})
 
       {:keep_state_and_data, [{{:timeout, :check_quorum}, checkquorum_interval(), :check_quorum}]}
     end
@@ -1137,7 +1153,7 @@ defmodule Craft.Consensus do
 
       state
     end,
-    [:craft, :heartbeat],
+    [:craft, :quorum, :heartbeat],
     %{name: state.name})
   end
 

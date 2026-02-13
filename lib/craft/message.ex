@@ -7,6 +7,8 @@ defmodule Craft.Message do
   alias Craft.Message.InstallSnapshot
   alias Craft.Message.RequestVote
 
+  import Craft.Tracing, only: [telemetry: 3]
+
   def request_vote(state, opts \\ []) do
     request_vote = RequestVote.new(state, opts)
 
@@ -44,16 +46,45 @@ defmodule Craft.Message do
     |> send_message(install_snapshot.leader_id, state)
   end
 
+  defp message_sent_telemetry(%AppendEntries{} = append_entries, to_node) do
+    telemetry([:craft, :message, :sent, :append_entries], %{num_entries: Enum.count(append_entries.entries)}, %{to_node: to_node})
+  end
+
+  defp message_sent_telemetry(%AppendEntries.Results{}, to_node) do
+    telemetry([:craft, :message, :sent, :append_entries_results], %{}, %{to_node: to_node})
+  end
+
+  defp message_sent_telemetry(%RequestVote{} = request_vote, to_node) do
+    telemetry([:craft, :message, :sent, :request_vote], %{}, %{to_node: to_node, pre_vote: request_vote.pre_vote})
+  end
+
+  defp message_sent_telemetry(%RequestVote.Results{} = results, to_node) do
+    telemetry([:craft, :message, :sent, :request_vote_results], %{}, %{to_node: to_node, vote_granted: results.vote_granted})
+  end
+
+  defp message_sent_telemetry(%InstallSnapshot{}, to_node) do
+    telemetry([:craft, :message, :sent, :install_snapshot], %{}, %{to_node: to_node})
+  end
+
+  defp message_sent_telemetry(%InstallSnapshot.Results{}, to_node) do
+    telemetry([:craft, :message, :sent, :install_snapshot_results], %{}, %{to_node: to_node})
+  end
+
   if Mix.env() == :test do
     require Logger
 
     def send_message(message, to_node, state) do
       import Craft.Tracing, only: [logger_metadata: 2]
+
+      message_sent_telemetry(message, to_node)
+
       # the nexus is listening to the logger, when it sees a `:sent_msg` trace, it does the actual send itself
       Logger.debug("sent #{inspect message.__struct__}", logger_metadata(state, trace: {:sent_msg, to_node, node(), message}))
     end
   else
     def send_message(message, to_node, state) do
+      message_sent_telemetry(message, to_node)
+
       Craft.Consensus.remote_operation(state.name, to_node, :cast, message)
     end
   end

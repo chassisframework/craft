@@ -27,26 +27,38 @@ features:
 - rocksdb backend
 - fast snapshot transfer via sendfile sysctl
 
-
-telemetry metrics:
-
+telemetry events:
 ```elixir
-[:craft, :heartbeat, :append_entries],
-[:craft, :heartbeat, :reply, :duplicate],
-[:craft, :heartbeat, :reply, :missed_deadline],
-[:craft, :heartbeat, :reply, :out_of_order],
-[:craft, :heartbeat, :reply, :round_expired],
-[:craft, :heartbeat],
-[:craft, :machine, :user, :handle_command],
-[:craft, :machine, :user, :handle_commands],
-[:craft, :machine, :user, :handle_query],
-[:craft, :machine, :user, :snapshot],
-[:craft, :persistence, :commit_buffer],
-[:craft, :persistence, :fetch],
-[:craft, :persistence, :fetch_between],
-[:craft, :persistence, :fetch_from],
-[:craft, :persistence, :reverse_find],
-[:craft, :persistence, :rewind],
-[:craft, :persistence, :truncate],
-[:craft, :quorum, :succeeded]
+[
+  [:craft, :quorum, :heartbeat],
+  [:craft, :quorum, :succeeded],
+  [:craft, :check_quorum, :succeeded],
+  [:craft, :check_quorum, :failed],
+  [:craft, :persistence, :commit_buffer],
+  [:craft, :persistence, :fetch],
+  [:craft, :persistence, :fetch_between],
+  [:craft, :persistence, :fetch_from],
+  [:craft, :persistence, :reverse_find],
+  [:craft, :persistence, :rewind],
+  [:craft, :persistence, :truncate],
+  [:craft, :heartbeat, :reply, :duplicate],
+  [:craft, :heartbeat, :reply, :missed_deadline],
+  [:craft, :heartbeat, :reply, :out_of_order],
+  [:craft, :heartbeat, :reply, :round_expired],
+  [:craft, :role, :lonely],
+  [:craft, :role, :receiving_snapshot],
+  [:craft, :role, :follower],
+  [:craft, :role, :candidate],
+  [:craft, :role, :leader],
+  [:craft, :message, :sent, :append_entries],
+  [:craft, :message, :sent, :append_entries_results],
+  [:craft, :message, :sent, :request_vote],
+  [:craft, :message, :sent, :request_vote_results],
+  [:craft, :message, :sent, :install_snapshot],
+  [:craft, :message, :sent, :install_snapshot_results],
+  [:craft, :machine, :user, :handle_command],
+  [:craft, :machine, :user, :handle_commands],
+  [:craft, :machine, :user, :handle_query],
+  [:craft, :machine, :user, :snapshot]
+]
 ```

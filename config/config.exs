@@ -55,4 +55,9 @@ if config_env() == :test do
   config :craft, :logger, [{:handler, :nexus_handler, Craft.Nexus, %{}}]
 end
 
+# config :hertz, :statsd,
+#   enabled: true,
+#   host: "127.0.0.1",
+#   port: 8125
+
 #import_config "#{config_env()}.exs"

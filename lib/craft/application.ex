@@ -17,6 +17,9 @@ defmodule Craft.Application do
       Craft.Sandbox.Manager
     ]
 
+    # Hertz.install_monitors([
+    #   Hertz.Monitor.Craft
+    # ])
     # Craft.TelemetryListener.attach()
 
     {:ok, pid} = Supervisor.start_link(children, strategy: :rest_for_one)

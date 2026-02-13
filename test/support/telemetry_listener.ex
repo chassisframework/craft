@@ -1,32 +1,14 @@
 defmodule Craft.TelemetryListener do
-  def handle_event(event, measurements, metadata, _config) do
-    IO.inspect("#{inspect event} #{inspect measurements}", label: node())
+  def handle_event(event, measurements, meta, _config) do
+    IO.inspect({event, measurements, meta}, label: node())
   end
 
   def attach do
-    metrics = [
-      [:craft, :heartbeat, :append_entries],
-      [:craft, :heartbeat, :reply, :duplicate],
-      [:craft, :heartbeat, :reply, :missed_deadline],
-      [:craft, :heartbeat, :reply, :out_of_order],
-      [:craft, :heartbeat, :reply, :round_expired],
-      [:craft, :heartbeat],
-      [:craft, :machine, :user, :handle_command],
-      [:craft, :machine, :user, :handle_commands],
-      [:craft, :machine, :user, :handle_query],
-      [:craft, :machine, :user, :snapshot],
-      [:craft, :persistence, :commit_buffer],
-      [:craft, :persistence, :fetch],
-      [:craft, :persistence, :fetch_between],
-      [:craft, :persistence, :fetch_from],
-      [:craft, :persistence, :reverse_find],
-      [:craft, :persistence, :rewind],
-      [:craft, :persistence, :truncate],
-      [:craft, :quorum, :succeeded]
-    ]
-
-    for metric <- metrics do
-      :ok = :telemetry.attach(metric, metric, &__MODULE__.handle_event/4, nil)
-    end
+    :telemetry.attach_many(
+      __MODULE__,
+      Craft.telemetry_events(),
+      &__MODULE__.handle_event/4,
+      nil
+    )
   end
 end

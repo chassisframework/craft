@@ -194,6 +194,64 @@ defmodule Craft do
   """
   def switch_mode(name, mode) when mode in [:normal, :write_optimized], do: backend().switch_mode(name, mode)
 
+  @persistence_functions [
+     :commit_buffer,
+     :fetch,
+     :fetch_between,
+     :fetch_from,
+     :reverse_find,
+     :rewind,
+     :truncate
+   ]
+
+  @heartbeat_reply_warnings [
+     :duplicate,
+     :missed_deadline,
+     :out_of_order,
+     :round_expired
+   ]
+
+  @roles [
+     :lonely,
+     :receiving_snapshot,
+     :follower,
+     :candidate,
+     :leader
+   ]
+
+  @messages [
+     :append_entries,
+     :append_entries_results,
+     :request_vote,
+     :request_vote_results,
+     :install_snapshot,
+     :install_snapshot_results
+   ]
+
+  @user_machine_callbacks [
+     :handle_command,
+     :handle_commands,
+     :handle_query,
+     :snapshot
+   ]
+
+  @events [
+     [:craft, :quorum, :heartbeat],
+     [:craft, :quorum, :succeeded],
+     [:craft, :check_quorum, :succeeded],
+     [:craft, :check_quorum, :failed]
+   ]
+
+  def telemetry_events do
+    heartbeat_reply_warning_events = Enum.map(@heartbeat_reply_warnings, fn warning -> [:craft, :heartbeat, :reply, warning] end)
+    persistence_events = Enum.map(@persistence_functions, fn function -> [:craft, :persistence, function] end)
+    role_change_events = Enum.map(@roles, fn role -> [:craft, :role, role] end)
+    message_sent_events = Enum.map(@messages, fn message -> [:craft, :message, :sent, message] end)
+    user_machine_callback_events = Enum.map(@user_machine_callbacks, fn callback -> [:craft, :machine, :user, callback] end)
+
+    @events ++ persistence_events ++ heartbeat_reply_warning_events ++ role_change_events ++ message_sent_events ++ user_machine_callback_events
+  end
+
   @doc false
   def state(name, node), do: backend().state(name, node)
 

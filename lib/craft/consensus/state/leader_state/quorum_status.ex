@@ -77,12 +77,12 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
             Logger.warning("duplicate heartbeat reply received: #{inspect results}, ignoring.", logger_metadata(state))
             telemetry([:craft, :heartbeat, :reply, :duplicate],
                       %{},
-                      %{leader: node(), follower: results.from})
+                      %{follower: results.from})
           else
             Logger.warning("out-of-order heartbeat reply received: #{inspect results}, ignoring.", logger_metadata(state))
             telemetry([:craft, :heartbeat, :reply, :out_of_order],
                       %{},
-                      %{leader: node(), follower: results.from})
+                      %{follower: results.from})
           end
 
           {:halt, {false, false, false, quorum_status}}
@@ -100,7 +100,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
 
               telemetry([:craft, :heartbeat, :reply, :missed_deadline],
                         %{lag_ms: lag},
-                        %{leader: node(), follower: results.from})
+                        %{follower: results.from})
             end
 
             quorum_status =
@@ -109,7 +109,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
                 breathing_room = Consensus.heartbeat_interval() - duration
                 telemetry([:craft, :quorum, :succeeded],
                           %{duration_ms: duration, breathing_room_ms: breathing_room},
-                          %{leader: node()})
+                          %{})
 
                 %{quorum_status | latest_successful_round_sent_at: results.heartbeat_sent_at}
               else
@@ -130,7 +130,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
         Logger.warning("expired quorum round in heartbeat reply: #{inspect results}, ignoring.", logger_metadata(state))
         telemetry([:craft, :heartbeat, :reply, :round_expired],
                   %{},
-                  %{leader: node(), follower: results.from})
+                  %{follower: results.from})
 
         {false, false, false, state}
 
