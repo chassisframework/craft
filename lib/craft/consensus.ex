@@ -515,13 +515,15 @@ defmodule Craft.Consensus do
   def follower(:cast, %AppendEntries{} = append_entries, data) do
     prev_log_term = append_entries.prev_log_term
     old_commit_index = data.commit_index
-    data =
-      %{data |
-        leader_id: append_entries.leader_id,
-        lease_expires_at: append_entries.lease_expires_at
-      }
+    data = %{data | leader_id: append_entries.leader_id}
 
-    data = Metadata.buffer_put(data)
+    data =
+      if append_entries.lease_expires_at != data.lease_expires_at do
+        %{data | lease_expires_at: append_entries.lease_expires_at}
+        |> Metadata.buffer_put()
+      else
+        data
+      end
 
     {success, data} =
       if Enum.empty?(append_entries.entries) do
@@ -1111,7 +1113,14 @@ defmodule Craft.Consensus do
         if state.global_clock do
           case GlobalTimestamp.now(state.global_clock) do
             {:ok, now} ->
-              %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
+              # if we're within three heartbeats of lease expiration, bump the lease
+              # we don't bump the lease with every heartbeat as it costs latency to write the new lease to disk
+              if !state.lease_expires_at or DateTime.diff(state.lease_expires_at.earliest, now.latest, :millisecond) / heartbeat_interval() < 3 do
+                %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
+                |> Metadata.buffer_put()
+              else
+                state
+              end
 
             error ->
               Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state, trace: :global_clock_failure))
@@ -1122,7 +1131,6 @@ defmodule Craft.Consensus do
           state
         end
 
-      state = Metadata.buffer_put(state)
       state = %{state | persistence: Persistence.commit_buffer(state.persistence)}
 
       state =

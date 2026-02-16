@@ -6,7 +6,7 @@ defmodule Craft.GlobalTimestamp.FixedError do
 
   @behaviour GlobalTimestamp
 
-  @error 100 # ms
+  @error 3 # ms
 
   def now do
     now = :erlang.system_time(:nanosecond) |> DateTime.from_unix!(:nanosecond)

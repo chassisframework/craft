@@ -34,7 +34,7 @@ config :craft, :lonely_timeout, lonely_timeout
 # in split-brain scenarios (this is what TiKV does).
 #
 # you don't have to do this, you're free to set the value however you like, the new leader will just wait out the old lease.
-config :craft, :leader_lease_period, lonely_timeout - 200
+config :craft, :leader_lease_period, lonely_timeout - heartbeat_interval
 
 # amount of time a canddiate will wait for votes before concluding that the election has failed
 config :craft, :election_timeout, 1500
