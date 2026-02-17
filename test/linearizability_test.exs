@@ -6,8 +6,6 @@ defmodule Craft.LinearizabilityTest do
   alias Craft.Nexus.Stability
   alias Craft.ParallelClients
 
-  require Logger
-
   @moduletag timeout: :timer.minutes(20)
 
   nexus_test "under stable conditions", ctx do
@@ -110,14 +108,12 @@ defmodule Craft.LinearizabilityTest do
     assert_linearizable(history)
   end
 
-  nexus_test "write-optimized machine", %{nodes: nodes, name: name, nexus: nexus} = ctx do
+  nexus_test "write-optimized machine", %{name: name, nexus: nexus} = ctx do
     wait_until(nexus, {Stability, :all})
 
     num_clients = 10
 
-    for node <- nodes do
-      Craft.switch_mode(name, node, :write_optimized)
-    end
+    :ok = Craft.switch_mode(name, :write_optimized)
 
     clients =
       ctx
@@ -131,7 +127,7 @@ defmodule Craft.LinearizabilityTest do
     assert_linearizable(history)
   end
 
-  nexus_test "switch to write-optimized machine", %{nodes: nodes, name: name, nexus: nexus} = ctx do
+  nexus_test "switch to write-optimized machine", %{name: name, nexus: nexus} = ctx do
     wait_until(nexus, {Stability, :all})
 
     num_clients = 10
@@ -143,9 +139,7 @@ defmodule Craft.LinearizabilityTest do
 
     Process.sleep(300)
 
-    for node <- nodes do
-      Craft.switch_mode(name, node, :write_optimized)
-    end
+    :ok = Craft.switch_mode(name, :write_optimized)
 
     Process.sleep(300)
 
