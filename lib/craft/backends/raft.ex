@@ -287,7 +287,7 @@ defmodule Craft.Raft do
 
   defp do_leader_redirect(name, leader, members, func, previous_redirects \\ MapSet.new()) do
     case func.(leader) do
-      {:error, :unknown_leader} ->
+      {:error, error} when error in [:unknown_leader, :nodedown] ->
         members = MapSet.delete(members, leader)
 
         if Enum.empty?(members) do
