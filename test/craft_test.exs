@@ -148,7 +148,7 @@ defmodule CraftTest do
       assert is_list(:rpc.call(node, Craft, :purge, [name]))
 
       :ok = :rpc.call(node, Craft, :restore, [backup_dir])
-      {:ok, _pid} = :rpc.call(node, Craft, :start_member, [name, [nexus_pid: nexus]])
+      {:ok, _pid} = :rpc.call(node, Craft.MemberSupervisor, :start_existing_member, [name, %{nexus_pid: nexus}])
     end
 
     wait_until(nexus, {Stability, :majority})
