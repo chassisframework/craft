@@ -132,15 +132,7 @@ defmodule Craft.Raft do
     :ok
   end
 
-  def send(name, message) do
-    if pid = Craft.Application.lookup(name, Craft.Machine) do
-      Kernel.send(pid, message)
-
-      :ok
-    else
-      {:error, :unknown_group}
-    end
-  end
+  defdelegate send(name, message), to: Craft.Machine, as: :send_user_message
 
   def reply_from, do: :not_implemented
 
@@ -211,6 +203,9 @@ defmodule Craft.Raft do
       :linearizable ->
         with_leader_redirect(name, &call_machine(name, &1, {:query, :linearizable, query}, timeout))
 
+      {:linearizable, {:node, node}} ->
+        call_machine(name, node, {:query, :linearizable, :follower, query}, timeout)
+
       {:eventual, :leader} ->
         with_leader_redirect(name, &call_machine(name, &1, {:query, {:eventual, :leader}, query}, timeout))
 
@@ -264,7 +259,7 @@ defmodule Craft.Raft do
     end
   end
 
-  defp with_leader_redirect(name, func) do
+  def with_leader_redirect(name, func) do
     case MemberCache.get(name) do
       {:ok, %GroupStatus{} = group_status} ->
         members =

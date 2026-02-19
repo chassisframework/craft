@@ -41,7 +41,7 @@ defmodule Craft.TestGroup do
 
   def run(name, nodes) do
     Task.async_stream(nodes, fn node ->
-      Consensus.remote_operation(name, node, :cast, :run)
+      :ok = Consensus.remote_operation(name, node, :call, :run)
     end)
     |> Stream.run()
   end

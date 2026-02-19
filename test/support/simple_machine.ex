@@ -66,7 +66,9 @@ defmodule Craft.SimpleMachine do
     {:reply, {:ok, Map.get(state, k)}}
   end
 
-  @impl true
+  # same as {:get, k}, but shows up in debug logging as a follower read
+  def handle_query({:get_from_follower, k}, from, state), do: handle_query({:get, k}, from, state)
+
   def handle_query({:get_parallel, k, opts}, from, state) do
     pid = self()
     spawn_link(fn ->

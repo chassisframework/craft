@@ -11,7 +11,7 @@ defmodule Craft.Message.AppendEntries do
     :prev_log_index,
     :prev_log_term,
     :entries,
-    :leader_commit,
+    :leader_last_applied,
     :leadership_transfer,
     :sent_at,
     :lease_expires_at
@@ -58,7 +58,7 @@ defmodule Craft.Message.AppendEntries do
       prev_log_index: prev_log_index,
       prev_log_term: prev_log_term,
       entries: entries,
-      leader_commit: state.commit_index,
+      leader_last_applied: state.last_applied,
       leadership_transfer: leadership_transfer,
       sent_at: state.leader_state.quorum_status.current_round_sent_at,
       lease_expires_at: state.lease_expires_at

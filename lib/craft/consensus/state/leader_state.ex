@@ -11,6 +11,10 @@ defmodule Craft.Consensus.State.LeaderState do
   alias Craft.Message.InstallSnapshot
   alias Craft.SnapshotServer.SnapshotTransfer
 
+  require Logger
+
+  import Craft.Tracing, only: [logger_metadata: 2]
+
   defstruct [
     :next_indices,
     :match_indices,
@@ -18,6 +22,7 @@ defmodule Craft.Consensus.State.LeaderState do
     :leadership_transfer,
     :quorum_status,
     :waiting_for_lease,
+    commit_index: 0,
     snapshot_transfers: %{}
   ]
 
@@ -75,7 +80,7 @@ defmodule Craft.Consensus.State.LeaderState do
 
   def config_change_in_progress?(%State{} = state) do
     state.persistence
-    |> Persistence.fetch_from(state.commit_index + 1)
+    |> Persistence.fetch_from(state.leader_state.commit_index + 1)
     |> Enum.any?(fn
       %MembershipEntry{} -> true
       _ -> false
@@ -141,6 +146,8 @@ defmodule Craft.Consensus.State.LeaderState do
     MemberCache.leader_update(state)
 
     if notify_machine? do
+      Logger.debug("quorum reached", logger_metadata(state, trace: :quorum_reached))
+
       if state.lease_expires_at && !state.leader_state.waiting_for_lease do
         MemberCache.update_lease_holder(state)
       end
@@ -158,7 +165,7 @@ defmodule Craft.Consensus.State.LeaderState do
       log_too_long = Persistence.length(state.persistence) > Consensus.maximum_log_length()
       # log_too_big = Persistence.log_size() > 100mb or 100 entries, etc
 
-      Machine.quorum_reached(state, all_followers_caught_up && log_too_long)
+      Machine.quorum_reached(state, state.leader_state.commit_index, all_followers_caught_up && log_too_long)
     end
 
     state
@@ -188,7 +195,7 @@ defmodule Craft.Consensus.State.LeaderState do
       highest_uncommitted_match_index =
         match_indices_for_commitment
         |> Map.values()
-        |> Enum.filter(fn index -> index >= state.commit_index end)
+        |> Enum.filter(fn index -> index >= state.leader_state.commit_index end)
         |> Enum.uniq()
         |> Enum.sort()
         |> Enum.reverse()
@@ -202,7 +209,7 @@ defmodule Craft.Consensus.State.LeaderState do
       with false <- is_nil(highest_uncommitted_match_index),
            {:ok, entry} <- Persistence.fetch(state.persistence, highest_uncommitted_match_index),
            true <- entry.term == state.current_term do
-        %{state | commit_index: highest_uncommitted_match_index}
+        put_in(state.leader_state.commit_index, highest_uncommitted_match_index)
       else
         _ ->
           state

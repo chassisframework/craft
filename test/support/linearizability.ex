@@ -13,9 +13,6 @@ defmodule Craft.Linearizability do
       response: term
     }
   ```
-
-  timeout errors may have been applied to the system, but other "caught" errors are assumed to not have changed the system state.
-  therefore, operations with responses of `{:error, :timeout}` will be considered, but other `{:error, _}` will simply be ignored.
   """
   defmodule Operation do
     defstruct [
@@ -71,7 +68,8 @@ defmodule Craft.Linearizability do
     {history, ignored_ops} =
       history
       |> Enum.split_with(fn
-        %{response: {:error, reason}} when reason != :timeout ->
+        # we don't care about read errors, they don't tell us anything about the state
+        %{request: {:read, _}, response: {:error, _}} ->
           false
 
         _ ->
@@ -122,10 +120,10 @@ defmodule Craft.Linearizability do
               {model.read(query, model_state), model_state}
           end
 
-        # if the operation timed out, consider the possiblity that it occurred but the client just didn't get a response
+        # if the operation was a write that errored, consider the possiblity that it occurred but the client just didn't get a confirming response
         {response_ok?, model_states_to_consider} =
-          case op.response do
-            {:error, :timeout} ->
+          case op do
+            %{request: {:write, _}, response: {:error, _}} ->
               {true, Enum.dedup([model_state, new_model_state])}
 
             _ ->

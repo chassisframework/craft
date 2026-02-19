@@ -99,6 +99,10 @@ defmodule Craft.Consensus do
     do_operation(:call, name, :get_log)
   end
 
+  def set_last_applied(name, index) do
+    do_operation(:cast, name, {:set_last_applied, index})
+  end
+
   # casting a user command is necessary when the node that recieves the command
   # is not the one that will respond to it (just leadership transfer, so far).
   def cast_user_command(name, node, msg, opts \\ []) do
@@ -170,7 +174,7 @@ defmodule Craft.Consensus do
   defp continue_init(data) do
     MemberCache.non_leader_update(data)
 
-    {:ok, snapshot} = Machine.init_or_restore(data)
+    {:ok, snapshot, last_applied} = Machine.init_or_restore(data)
 
     if data.global_clock do
       Logger.info("consensus process started, global clock present, leader leases enabled", logger_metadata(data))
@@ -178,7 +182,7 @@ defmodule Craft.Consensus do
       Logger.info("consensus process started, no global clock present, leader leases disabled", logger_metadata(data))
     end
 
-    %{data | snapshot: snapshot}
+    %{data | snapshot: snapshot, last_applied: last_applied}
   end
 
   def child_spec(args) do
@@ -194,10 +198,10 @@ defmodule Craft.Consensus do
 
   if Mix.env() == :test do
     def waiting_to_start(:enter, _, _data), do: :keep_state_and_data
-    def waiting_to_start(:cast, :run, data) do
+    def waiting_to_start({:call, from}, :run, data) do
       data = continue_init(data)
 
-      {:next_state, data.state, data, []}
+      {:next_state, data.state, data, [{:reply, from, :ok}]}
     end
     def waiting_to_start({:call, from}, :state, data) do
       {:keep_state_and_data, [{:reply, from, {data, Persistence.dump(data.persistence)}}]}
@@ -312,6 +316,10 @@ defmodule Craft.Consensus do
     send(caller_pid, {id, not_leader_response(data)})
 
     :keep_state_and_data
+  end
+
+  def lonely(:cast, {:set_last_applied, last_applied}, data) do
+    {:keep_state, %{data | last_applied: last_applied}}
   end
 
   def lonely({:call, from}, :state, data) do
@@ -437,6 +445,10 @@ defmodule Craft.Consensus do
     {:repeat_state, %{data | incoming_snapshot_transfer: nil}}
   end
 
+  def receiving_snapshot(:cast, {:set_last_applied, last_applied}, data) do
+    {:keep_state, %{data | last_applied: last_applied}}
+  end
+
   def receiving_snapshot(:cast, {:user_command, {caller_pid, _ref} = id, _command}, data) do
     send(caller_pid, {id, not_leader_response(data)})
 
@@ -514,7 +526,6 @@ defmodule Craft.Consensus do
   # TODO: move most of this into State module?
   def follower(:cast, %AppendEntries{} = append_entries, data) do
     prev_log_term = append_entries.prev_log_term
-    old_commit_index = data.commit_index
     data = %{data | leader_id: append_entries.leader_id}
 
     data =
@@ -579,21 +590,21 @@ defmodule Craft.Consensus do
         end
       end
 
-    data = %{data | commit_index: min(append_entries.leader_commit, Persistence.latest_index(data.persistence))}
-
     Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
 
     Message.respond_append_entries(append_entries, success, data)
 
-    if success && data.commit_index > old_commit_index do
+    apply_up_to = min(append_entries.leader_last_applied, Persistence.latest_index(data.persistence))
+
+    if success && data.last_applied < apply_up_to do
       log_too_long = Persistence.length(data.persistence) > maximum_log_length()
 
       Logger.debug("quorum reached", logger_metadata(data, trace: :quorum_reached))
 
-      Machine.quorum_reached(data, log_too_long)
+      Machine.quorum_reached(data, apply_up_to, log_too_long)
     end
 
-    # we do this after notifying the machine that quorum has been reached so it can bump the commit index
+    # we do this after notifying the machine that quorum has been reached so it can bump apply_up_to
     data =
       if Enum.empty?(append_entries.entries) do
         if !data.notified_machine_of_idleness do
@@ -627,6 +638,10 @@ defmodule Craft.Consensus do
     send(caller_pid, {id, not_leader_response(data)})
 
     :keep_state_and_data
+  end
+
+  def follower(:cast, {:set_last_applied, last_applied}, data) do
+    {:keep_state, %{data | last_applied: last_applied}}
   end
 
   def follower({:call, from}, :state, data) do
@@ -774,6 +789,10 @@ defmodule Craft.Consensus do
     send(caller_pid, {id, not_leader_response(data)})
 
     :keep_state_and_data
+  end
+
+  def candidate(:cast, {:set_last_applied, last_applied}, data) do
+    {:keep_state, %{data | last_applied: last_applied}}
   end
 
   def candidate({:call, from}, :state, data) do
@@ -960,7 +979,7 @@ defmodule Craft.Consensus do
 
     # the membership change has committed
     with %MembershipChange{} = membership_change <- data.leader_state.membership_change,
-         true <- data.commit_index >= membership_change.log_index do
+         true <- data.leader_state.commit_index >= membership_change.log_index do
       data = put_in(data.leader_state.membership_change, nil)
 
       # if we're being removed, transfer leadership away first
@@ -1019,6 +1038,10 @@ defmodule Craft.Consensus do
 
       :keep_state_and_data
     end
+  end
+
+  def leader(:cast, {:set_last_applied, last_applied}, data) do
+    {:keep_state, %{data | last_applied: last_applied}}
   end
 
   def leader({:call, from}, {:command, _command}, %State{leader_state: %LeaderState{leadership_transfer: %LeadershipTransfer{} = leadership_transfer}}) do

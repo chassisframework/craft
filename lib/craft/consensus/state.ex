@@ -21,7 +21,7 @@ defmodule Craft.Consensus.State do
     :lease_expires_at,
     :snapshot,
     {:current_term, -1},
-    {:commit_index, 0},
+    :last_applied, # this value is not authoritative, it's just whatever the machine last told us.
 
     :leader_state,
     :voted_for, # lonely and follower

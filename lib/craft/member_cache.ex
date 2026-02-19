@@ -161,7 +161,7 @@ defmodule Craft.MemberCache do
     elements = [
       {index(:leader), state.leader_id},
       {index(:members), members},
-      {index(:commit_index), state.commit_index},
+      {index(:commit_index), state.leader_state.commit_index},
       {index(:current_term), state.current_term}
     ]
 
