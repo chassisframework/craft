@@ -194,10 +194,10 @@ defmodule Craft.Consensus do
 
   if Mix.env() == :test do
     def waiting_to_start(:enter, _, _data), do: :keep_state_and_data
-    def waiting_to_start(:cast, :run, data) do
+    def waiting_to_start({:call, from}, :run, data) do
       data = continue_init(data)
 
-      {:next_state, data.state, data, []}
+      {:next_state, data.state, data, [{:reply, from, :ok}]}
     end
     def waiting_to_start({:call, from}, :state, data) do
       {:keep_state_and_data, [{:reply, from, {data, Persistence.dump(data.persistence)}}]}

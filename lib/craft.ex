@@ -146,6 +146,7 @@ defmodule Craft do
   #
   # Craft.query(command, name, consistency: :linearizable)
   # if `consistency` is `:linearizable`, will address leader
+  # if `consistency` is `{:linearizable, node}`, will address given node
   # if `consistency` is `:eventual`, will address random follower
   # if `consistency` is `{:eventual, node}`, will address given node
   #
@@ -162,7 +163,12 @@ defmodule Craft do
   - `timeout` - (default: 5_000) the time before we return a timeout error
 
   ### Consistency values
-  - `:linearizable` - query is run on the leader
+  - `:linearizable` - query is run on the leader (default)
+  - `{:linearizable, {:node, node}}` - query is run on the given node as a linearizable read-index query
+    - this incurs one extra network RTT (client -> follower -> leader), as the follower needs to get the latest commit index from the leader
+        - if leases are enabled, the leader can immediately return its commit index
+        - if leases are disabled, the leader must go through a quorum round to return the commit index (one additional RTT)
+    - this allows offloading heavy queries to followers without compromising safety, but at the expense of latency. it's quite useful for rebuilding volatile local caches after a deploy.
   - `:eventual` - query is run on a random node
   - `{:eventual, :leader}` - query is run on the leader without checking for quorum before returning result
   - `{:eventual, {:node, node}}` - query is run on the given node without linearizable guarentees

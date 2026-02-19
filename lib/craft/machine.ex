@@ -72,7 +72,19 @@ defmodule Craft.Machine do
       waiting_for_first_commit: true,
       mode: :normal, # :normal | :write_optimized
       last_applied: 0,
-      client_query_results: [],
+      # 
+      # a read-index query is different from a leaseless quorum query. in a monolithic architecture, they'd be the same, but craft splits
+      # apart the machine and the consensus apparatus into two different processes, which makes race conditions possible. given that craft
+      # offers linearizable guarantees, realtime interactions between the two processes are relevant. under read-index, an old quorum notification
+      # of the read index may arrive after query execution, resulting in response release, even though quorum didn't actually take place
+      # in reality after the query was executed.
+      #
+      # leaseless read-index queries are linearizable on followers because they force a quorum round on the leader to confirm the current
+      # commit index before sending the index to the client for execution.
+      # 
+      read_index_tasks: %{},
+      read_index_queries: :gb_trees.empty(),
+      client_query_results: :gb_trees.empty(),
       pending_parallel_queries: MapSet.new(),
       client_commands: %{}
     ]
@@ -122,6 +134,14 @@ defmodule Craft.Machine do
     state.name
     |> lookup(__MODULE__)
     |> GenServer.cast(:idle)
+  end
+
+  def send_user_message(name, message) do
+    if pid = lookup(name, __MODULE__) do
+      GenServer.cast(pid, {:user_message, message})
+    else
+      {:error, :unknown_group}
+    end
   end
 
   def state(name) do
@@ -208,7 +228,11 @@ defmodule Craft.Machine do
         {:error, {:not_leader, group_status.leader}}
       end
 
-    for {from, _result} <- state.client_query_results do
+    for {_query_executed_at, from, _result} <- :gb_trees.to_list(state.client_query_results) do
+      GenServer.reply(from, response)
+    end
+
+    for from <- state.pending_parallel_queries do
       GenServer.reply(from, response)
     end
 
@@ -220,10 +244,6 @@ defmodule Craft.Machine do
       else
         GenServer.reply(from, response)
       end
-    end
-
-    for from <- state.pending_parallel_queries do
-      GenServer.reply(from, response)
     end
 
     # for a new leader, handle_role_change/2 is called from the :quorum_reached handler when the first section 5.4.2 commit is observed
@@ -249,7 +269,7 @@ defmodule Craft.Machine do
        | role: new_role,
          private: private,
          client_commands: %{},
-         client_query_results: [],
+         client_query_results: :gb_trees.empty(),
          pending_parallel_queries: MapSet.new(),
          waiting_for_first_commit: waiting_for_first_commit
      }}
@@ -264,35 +284,65 @@ defmodule Craft.Machine do
       {"quorum reached", logger_metadata(trace: {:quorum_reached, metadata})}
     end)
 
-    entries_since_last_commit = entries_by_type(log, state.commit_index+1..new_commit_index//1)
+    range_since_last_commit = state.commit_index+1..new_commit_index//1
+    entries_since_last_commit = Persistence.fetch_between(log, range_since_last_commit)
 
-    state = %{state | last_quorum_at: last_quorum_at, commit_index: new_commit_index}
+    # if the commit index wasn't bumped, we're probably idle
+    idle = new_commit_index == state.commit_index
+
+    state = %{state | last_quorum_at: last_quorum_at, commit_index: new_commit_index, idle: idle}
+
+    {read_index_queries, queries_to_execute} = take_gb_tree(state.read_index_queries, state.last_applied)
+    read_index_queries_to_execute = Enum.flat_map(queries_to_execute, &MapSet.to_list/1)
+    state = %{state | read_index_queries: read_index_queries}
 
     state =
-      Enum.reduce(entries_since_last_commit[MembershipEntry] || [], state, fn {index, _entry}, state ->
-        reply_to_command(state, index, :ok)
-      end)
-
-    state =
-      if state.mode == :write_optimized do
-        Enum.reduce(entries_since_last_commit[CommandEntry] || [], state, fn {index, _entry}, state ->
+      if state.mode == :write_optimized and Enum.all?(entries_since_last_commit, &match?(%CommandEntry{}, &1)) do
+        Enum.reduce(range_since_last_commit, state, fn index, state ->
           reply_to_command(state, index, :ok)
         end)
       else
-        apply_commands(state, unapplied_entries_by_type(state, log)[CommandEntry] || [])
+        apply_outstanding_entries(state, log)
+      end
+
+    state =
+      if read_index_queries_to_execute != [] do
+        # in write-optimized mode, we've already responded to the current batch, but we need to apply everything for follower reads
+        state = apply_outstanding_entries(state, log)
+
+        # answer follower read-index queries
+        for {from, query} <- read_index_queries_to_execute do
+          time(fn ->
+            case state.module.handle_query(query, {:direct, from}, state.private) do
+              {:reply, reply} ->
+                GenServer.reply(from, reply)
+
+              :noreply ->
+                :noop
+            end
+          end,
+          [:craft, :machine, :user, :handle_query],
+          %{linearizable: true, follower_read: true})
+        end
+
+        state
+      else
+        state
       end
 
     # answer client queries
     state =
       if state.role == :leader do
-        # read-index based queries
-        for {from, result} <- state.client_query_results do
+        {client_query_results, results_ready} = take_gb_tree(state.client_query_results, last_quorum_at)
+        state = %{state | client_query_results: client_query_results}
+
+        for {from, result} <- results_ready do
           Logger.debug("responding to client query", logger_metadata(trace: {:sending_client_response, %{from: from, result: result}}))
 
           GenServer.reply(from, result)
         end
 
-        %{state | client_query_results: []}
+        state
       else
         state
       end
@@ -336,7 +386,7 @@ defmodule Craft.Machine do
         if state.module.__craft_mutable__() do
           if !state.snapshotter_pid or !Process.alive?(state.snapshotter_pid) do
             # apply any outstanding commands before snapshotting (write-optimized mode)
-            state = apply_commands(state, unapplied_entries_by_type(state, log)[CommandEntry] || [])
+            state = apply_outstanding_entries(state, log)
 
             snapshotter_pid = spawn_link(fn ->
               time(fn ->
@@ -370,10 +420,7 @@ defmodule Craft.Machine do
         state
       end
 
-    # if the commit index was bumped, we're probably not idle
-    idle = new_commit_index > state.last_applied
-
-    {:noreply, %{state | idle: idle}}
+    {:noreply, state}
   end
 
   # do a chunk of idle work, then re-check to see if still idle
@@ -385,8 +432,11 @@ defmodule Craft.Machine do
     log = Consensus.get_log(state.name)
     end_range = min(state.commit_index, state.last_applied + Consensus.maximum_entries_per_heartbeat())
 
-    unapplied_entries = entries_by_type(log, state.last_applied+1..end_range//1)[CommandEntry] || []
-    state = apply_commands(state, unapplied_entries)
+    range = state.last_applied+1..end_range//1
+    unapplied_entries = Persistence.fetch_between(log, range)
+    unapplied_entries_with_index = Enum.zip(range, unapplied_entries)
+    state = apply_entries(state, unapplied_entries_with_index)
+
     Logger.debug("idle, applying chunk of #{Enum.count(unapplied_entries)} outstanding commands", logger_metadata(trace: {:idle, :applying_commands, Enum.count(unapplied_entries)}))
 
     if end_range < state.commit_index do
@@ -400,6 +450,18 @@ defmodule Craft.Machine do
   def handle_cast(:maybe_do_idle_work, %State{idle: true} = state), do: handle_cast(:idle, state)
   def handle_cast(:maybe_do_idle_work, state), do: {:noreply, state}
 
+  def handle_cast({:user_message, msg}, state) do
+    private =
+      if function_exported?(state.module, :handle_info, 2) do
+        state.module.handle_info(msg, state.private)
+      else
+        Logger.error("Message #{inspect(msg)} received but no handle_info defined in #{inspect(state.module)}")
+
+        state.private
+      end
+
+    {:noreply, %{state | private: private}}
+  end
   #
   # the leader handles linearizable queries slightly differently, depending on if leases are enabled:
   #   - if leases are enabled,
@@ -422,13 +484,7 @@ defmodule Craft.Machine do
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
     if MemberCache.holding_lease?(state.name) do
       # write-optimized machine has unapplied commands
-      state =
-        if state.commit_index > state.last_applied do
-          Logger.debug("applying outstanding commands", logger_metadata(trace: {:query, :applying_commands, from, query}))
-          apply_commands(state, unapplied_entries_by_type(state)[CommandEntry] || [])
-        else
-          state
-        end
+      state = apply_outstanding_entries(state)
 
       Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
@@ -450,13 +506,7 @@ defmodule Craft.Machine do
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader} = state) do
     # write-optimized machine has unapplied commands
-    state =
-      if state.commit_index > state.last_applied do
-        Logger.debug("applying outstanding commands", logger_metadata(trace: {:query, :applying_commands, from, query}))
-        apply_commands(state, unapplied_entries_by_type(state)[CommandEntry] || [])
-      else
-        state
-      end
+    state = apply_outstanding_entries(state)
 
     Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :quorum_read, from, query}))
 
@@ -466,7 +516,7 @@ defmodule Craft.Machine do
       time(fn ->
         case state.module.handle_query(query, {:quorum, query_time, self(), from}, state.private) do
           {:reply, reply} ->
-            %{state | client_query_results: [{from, reply} | state.client_query_results]}
+            %{state | client_query_results: :gb_trees.enter(query_time, {from, reply}, state.client_query_results)}
 
           :noreply ->
             %{state | pending_parallel_queries: MapSet.put(state.pending_parallel_queries, from)}
@@ -487,6 +537,36 @@ defmodule Craft.Machine do
       _ ->
         {:reply, {:error, :unknown_leader}, state}
     end
+  end
+
+  # TODO: if a client directs a query to this node, which happens to be the leader, and it can't get quorum during a leaseless query (since we're just handling it as a leader query),
+  #       we should redo again after it becomes a follower, instead of returning a "not leader" error.
+  def handle_call({:query, :linearizable, :follower, query}, from, %State{role: :leader} = state) do
+    Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :follower, :read_index, from, query}))
+
+    handle_call({:query, :linearizable, query}, from, state)
+  end
+
+  def handle_call({:query, :linearizable, :follower, query}, from, state) do
+    Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :follower, :read_index, from, query}))
+
+    # avoids copying `state` into the task
+    name = state.name
+    read_index_task =
+      Task.async(fn ->
+        Craft.Raft.with_leader_redirect(name, fn node ->
+          Craft.Raft.call_machine(name, node, :get_last_applied_index, 5_000)
+        end)
+      end)
+
+    # write-optimized machine has unapplied commands
+    state = apply_outstanding_entries(state)
+
+    state = %{state | read_index_tasks: Map.put(state.read_index_tasks, read_index_task.ref, {from, query})}
+
+    # continued in handle_info/2 when Task returns
+
+    {:noreply, state}
   end
 
   def handle_call({:query, {:eventual, :leader}, query}, from, state) do
@@ -538,13 +618,14 @@ defmodule Craft.Machine do
     if is_pending? do
       if quorum_happend? do
         GenServer.reply(query_from, reply)
+
         {:reply, :ok, %{state | pending_parallel_queries: MapSet.delete(state.pending_parallel_queries, query_from)}}
       else
         {:reply, :ok,
          %{
            state
            | pending_parallel_queries: MapSet.delete(state.pending_parallel_queries, query_from),
-             client_query_results: [{query_from, reply} | state.client_query_results]
+             client_query_results: :gb_trees.enter(query_time, {query_from, reply}, state.client_query_results)
          }}
       end
     else
@@ -574,7 +655,6 @@ defmodule Craft.Machine do
     end
   end
 
-  @impl true
   def handle_call({:init_or_restore, log}, _from, state) do
     {last_applied, private, snapshot} =
       if state.module.__craft_mutable__() do
@@ -642,7 +722,6 @@ defmodule Craft.Machine do
   end
 
   # delete on-disk machine files etc...
-  @impl true
   def handle_call(:prepare_to_receive_snapshot, _from, state) do
     Logger.debug("preparing to receive snapshot", logger_metadata(trace: :preparing_to_receive_snapshot))
 
@@ -651,7 +730,6 @@ defmodule Craft.Machine do
     {:reply, {:ok, data_dir}, %{state | private: private}}
   end
 
-  @impl true
   def handle_call({:receive_snapshot, install_snapshot}, _from, state) do
     Logger.debug("receiving snapshot", logger_metadata(trace: {:receiving_snapshot, install_snapshot}))
 
@@ -671,7 +749,6 @@ defmodule Craft.Machine do
     {:reply, :ok, %{state | private: private, last_applied: last_applied, commit_index: last_applied}}
   end
 
-  @impl true
   def handle_call({:backup, to_directory}, _from, state) do
     if state.module.__craft_mutable__() do
       {:reply, state.module.backup(to_directory, state.private), state}
@@ -681,7 +758,6 @@ defmodule Craft.Machine do
     end
   end
 
-  @impl true
   def handle_call(:lease_taken, _from, state) do
     private =
       if function_exported?(state.module, :handle_lease_taken, 1) do
@@ -693,14 +769,43 @@ defmodule Craft.Machine do
     {:reply, :ok, %{state | private: private}}
   end
 
-  @impl true
   def handle_call({:switch_mode, mode}, _from, state) do
     {:reply, :ok, %{state | mode: mode}}
   end
 
+  def handle_call(:get_last_applied_index, _from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
+    if MemberCache.holding_lease?(state.name) do
+      # follower is about to service a read-index query, which is an externally visible event covered by consistency guarantees,
+      # so we need to fast-forward the log if we're in write-optimized mode with unapplied commits, just as if it was serviced locally
+      state = apply_outstanding_entries(state)
+
+      {:reply, {:ok, state.last_applied}, state}
+    else
+      {:reply, {:error, :not_leaseholder}, state}
+    end
+  end
+
+  def handle_call(:get_last_applied_index, from, %State{role: :leader} = state) do
+    state = apply_outstanding_entries(state)
+
+    query_time = :erlang.monotonic_time(:millisecond)
+    state = %{state | client_query_results: :gb_trees.enter(query_time, {from, {:ok, state.last_applied}}, state.client_query_results)}
+
+    {:noreply, state}
+  end
+
+  def handle_call(:get_last_applied_index, _from, state) do
+    case MemberCache.get(state.name) do
+      {:ok, %GroupStatus{leader: leader}} when not is_nil(leader) ->
+        {:reply, {:error, {:not_leader, leader}}, state}
+
+      _ ->
+        {:reply, {:error, :unknown_leader}, state}
+    end
+  end
+
   @impl true
   def handle_call(:state, _from, state) do
-    raise "shitballs"
     machine_state =
       if function_exported?(state.module, :dump, 1) do
         state.module.dump(state.private)
@@ -712,77 +817,143 @@ defmodule Craft.Machine do
   end
 
   @impl true
-  def handle_info(msg, state) do
-    private =
-      if function_exported?(state.module, :handle_info, 2) do
-        state.module.handle_info(msg, state.private)
-      else
-        Logger.error("Message #{inspect(msg)} received but no handle_info defined in #{inspect(state.module)}")
-        state.private
-      end
+  def handle_info({ref, leader_last_applied_index_reply}, %State{read_index_tasks: read_index_tasks} = state) when is_map_key(read_index_tasks, ref) do
+    receive do
+      {:DOWN, ^ref, :process, _pid, :normal} -> :to_consume_down_message
+    end
 
-    {:noreply, %{state | private: private}}
-  end
-
-  defp apply_commands(state, []), do: state
-  defp apply_commands(state, entries) do
+    {from, query} = Map.fetch!(read_index_tasks, ref)
+    # our last_applied may have incremented beyond the result returned by the leader while we were waiting
     state =
-      if function_exported?(state.module, :handle_commands, 2) do
-        Logger.debug("applying batch commands", logger_metadata(trace: {:applying_commands, entries}))
-
-        commands_with_indexes = Enum.map(entries, fn {index, entry} -> {entry.command, index} end)
-        {replies, private} =
-          time(fn ->
-            state.module.handle_commands(commands_with_indexes, state.private)
-          end,
-          [:craft, :machine, :user, :handle_commands],
-          %{},
-          %{num: Enum.count(commands_with_indexes)})
-
-        state = %{state | private: private}
-
-        # if the machine is write-optimized, we've already replied
-        if state.mode != :write_optimized do
-          entries
-          |> Enum.zip(replies)
-          |> Enum.reduce(state, fn {{index, _entry}, reply}, state ->
-            reply_to_command(state, index, reply)
-          end)
-        else
-          state
-        end
-      else
-        Enum.reduce(entries, state, fn {index, entry}, state ->
-          Logger.debug("applying command entry", logger_metadata(trace: {:applying_command, entry}))
-
-          {reply, private} =
+      case leader_last_applied_index_reply do
+        {:ok, leader_last_applied_index} ->
+          if state.last_applied >= leader_last_applied_index do
             time(fn ->
-              case state.module.handle_command(entry.command, index, state.private) do
-                {reply, private} ->
-                  {reply, private}
+              case state.module.handle_query(query, {:direct, from}, state.private) do
+                {:reply, reply} ->
+                  GenServer.reply(from, reply)
 
-                  # {reply, side_effects, private} ->
-                  #   if state.role == :leader do
-                  #     Enum.each(side_effects, fn {m, f, a} ->
-                  #       spawn(fn -> apply(m, f, a) end)
-                  #     end)
-                  #   end
-
-                  #   {reply, private}
+                :noreply ->
+                  :noop
               end
             end,
-            [:craft, :machine, :user, :handle_command],
-            %{})
+            [:craft, :machine, :user, :handle_query],
+            %{linearizable: true, follower_read: true})
 
+            state
+          else
+            # enqueue query to run when we see the read-index
+            queries_at_index =
+              case :gb_trees.lookup(leader_last_applied_index, state.read_index_queries) do
+                :none ->
+                  MapSet.new([{from, query}])
+
+                {:value, queries_at_index} ->
+                  MapSet.put(queries_at_index, {from, query})
+              end
+
+            %{state | read_index_queries: :gb_trees.enter(leader_last_applied_index, queries_at_index, state.read_index_queries)}
+          end
+
+        {:error, _} = error ->
+          GenServer.reply(from, error)
+
+          state
+      end
+
+    {:noreply, state}
+  end
+
+  def handle_info({:DOWN, ref, :process, _pid, reason}, %State{read_index_tasks: read_index_tasks} = state) when is_map_key(read_index_tasks, ref) do
+    {from, _query} = Map.fetch!(read_index_tasks, ref)
+
+    GenServer.reply(from, {:error, reason})
+
+    {:noreply, state}
+  end
+
+  defp apply_outstanding_entries(state), do: apply_outstanding_entries(state, Consensus.get_log(state.name))
+  defp apply_outstanding_entries(state, log) do
+    range = state.last_applied+1..state.commit_index//1
+    entries = Persistence.fetch_between(log, range)
+
+    entries_with_index = Enum.zip(range, entries)
+
+    apply_entries(state, entries_with_index)
+  end
+
+  defp apply_entries(state, []), do: state
+  defp apply_entries(state, entries) do
+    entries_by_type = Enum.group_by(entries, fn {_index, entry} -> entry.__struct__ end)
+
+    state =
+      Enum.reduce(entries_by_type[MembershipEntry] || [], state, fn {index, _entry}, state ->
+        reply_to_command(state, index, :ok)
+      end)
+
+    command_entries = entries_by_type[CommandEntry] || []
+
+    state =
+      if command_entries != [] do
+        if function_exported?(state.module, :handle_commands, 2) do
+          Logger.debug("applying batch commands", logger_metadata(trace: {:applying_commands, command_entries}))
+
+          commands_with_indexes = Enum.map(command_entries, fn {index, entry} -> {entry.command, index} end)
+          {replies, private} =
+            time(fn ->
+              state.module.handle_commands(commands_with_indexes, state.private)
+            end,
+            [:craft, :machine, :user, :handle_commands],
+            %{},
+            %{num: Enum.count(commands_with_indexes)})
 
           state = %{state | private: private}
 
+          # if the machine is write-optimized, we've already replied
           if state.mode != :write_optimized do
-            reply_to_command(state, index, reply)
+            command_entries
+            |> Enum.zip(replies)
+            |> Enum.reduce(state, fn {{index, _entry}, reply}, state ->
+              reply_to_command(state, index, reply)
+            end)
           else
             state
           end
-        end)
+        else
+          Enum.reduce(command_entries, state, fn {index, entry}, state ->
+            Logger.debug("applying command entry", logger_metadata(trace: {:applying_command, entry}))
+
+            {reply, private} =
+              time(fn ->
+                case state.module.handle_command(entry.command, index, state.private) do
+                  {reply, private} ->
+                    {reply, private}
+
+                    # {reply, side_effects, private} ->
+                    #   if state.role == :leader do
+                    #     Enum.each(side_effects, fn {m, f, a} ->
+                    #       spawn(fn -> apply(m, f, a) end)
+                    #     end)
+                    #   end
+
+                    #   {reply, private}
+                end
+              end,
+                   [:craft, :machine, :user, :handle_command],
+                   %{})
+
+
+            state = %{state | private: private}
+
+            if state.mode != :write_optimized do
+              reply_to_command(state, index, reply)
+            else
+              state
+            end
+          end)
+        end
+      else
+        state
       end
  
     {last_applied, _} = List.last(entries)
@@ -807,19 +978,18 @@ defmodule Craft.Machine do
     end
   end
 
-  defp unapplied_entries_by_type(state), do: unapplied_entries_by_type(state, Consensus.get_log(state.name))
-  defp unapplied_entries_by_type(state, log) do
-    entries_by_type(log, state.last_applied+1..state.commit_index//1)
-  end
+  @empty_gb_tree :gb_trees.empty()
+  defp take_gb_tree(state, value, results \\ [])
+  defp take_gb_tree(@empty_gb_tree, _value, results), do: {@empty_gb_tree, results}
 
-  defp entries_by_type(log, index_range) do
-    entries =
-      Enum.zip(
-        index_range,
-        Persistence.fetch_between(log, index_range)
-      )
+  defp take_gb_tree(tree, value, results) do
+    case :gb_trees.take_smallest(tree) do
+      {this_value, result, new_tree} when this_value <= value ->
+        take_gb_tree(new_tree, value, [result | results])
 
-    Enum.group_by(entries, fn {_index, entry} -> entry.__struct__ end)
+      _ ->
+        {tree, results}
+    end
   end
 
   defp snapshot_info(path) do

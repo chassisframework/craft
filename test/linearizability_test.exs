@@ -172,18 +172,20 @@ defmodule Craft.LinearizabilityTest do
         |> String.trim(">")
 
       case :rand.uniform(100) do
-        val when val > 50 ->
+        val when val > 75 ->
           command = {:put, :a, "#{value}_#{i}"}
           {{:write, command}, Craft.command(command, ctx.name)}
 
-        val when val > 25  ->
+        val when val > 50  ->
           query = {:get, :a}
           {{:read, query}, Craft.query(query, ctx.name)}
 
-        _val ->
-          # {{:read, {:get_parallel, :a, send_self: true}}, Craft.query({:get_parallel, :a, []}, ctx.name)}
+        val when val > 25  ->
           query = {:get, :a}
-          {{:read, query}, Craft.query(query, ctx.name)}
+          {{:read, query}, Craft.query(query, ctx.name, consistency: {:linearizable, {:node, Enum.random(ctx.nodes)}})}
+
+        _val ->
+          {{:read, {:get_parallel, :a, send_self: true}}, Craft.query({:get_parallel, :a, []}, ctx.name)}
       end
     end
   end
