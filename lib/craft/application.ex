@@ -11,8 +11,12 @@ defmodule Craft.Application do
     children = [
       Craft.SnapshotServer,
       {Task.Supervisor, name: Craft.SnapshotServer.Supervisor},
-      {DynamicSupervisor, [strategy: :one_for_one, name: Craft.Supervisor]},
       {Registry, keys: :unique, name: Craft.Registry},
+      Craft.HeartbeatSender,
+      Craft.HeartbeatReceiver,
+      # Craft.HeartbeatReplySender,
+      # Craft.HeartbeatReplyReceiver,
+      {DynamicSupervisor, [strategy: :one_for_one, name: Craft.Supervisor]},
       Craft.MemberCache,
       Craft.Sandbox.Manager
     ]

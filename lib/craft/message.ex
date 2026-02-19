@@ -3,6 +3,7 @@ defmodule Craft.Message do
 
   alias Craft.Consensus.State
   alias Craft.Consensus.State.Members
+  alias Craft.HeartbeatSender
   alias Craft.Message.AppendEntries
   alias Craft.Message.InstallSnapshot
   alias Craft.Message.RequestVote
@@ -24,9 +25,15 @@ defmodule Craft.Message do
   end
 
   def append_entries(%State{} = state, to_node) do
-    state
-    |> AppendEntries.new(to_node)
-    |> send_message(to_node, state)
+    case AppendEntries.new(state, to_node) do
+      %AppendEntries{entries: [], leadership_transfer: nil} = msg ->
+        # message_sent_telemetry(message, to_node)
+        # HeartbeatSender.enqueue(msg, to_node, state.name)
+        send_message(msg, to_node, state)
+        
+        msg ->
+          send_message(msg, to_node, state)
+    end
   end
 
   def respond_append_entries(%AppendEntries{} = append_entries, success, %State{} = state) do

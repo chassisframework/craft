@@ -28,4 +28,18 @@ defmodule Craft.Bootstrap do
 
     {name, nodes}
   end
+
+  def start_many_dev_consensus_groups(num_groups) do
+    nodes = Craft.TestCluster.spawn_nodes(3)
+
+    1..num_groups
+    |> Task.async_stream(fn _ ->
+      {name, _nodes} = start_dev_consensus_group(nodes)
+
+      Craft.MemberCache.discover(name, nodes)
+
+      name
+    end, max_concurrency: 20, timeout: 120_000)
+    |> Stream.run()
+  end
 end
