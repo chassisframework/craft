@@ -19,6 +19,19 @@ config :craft, :maximum_entries_per_heartbeat, 1_000
 # max log length before a compaction snapshot is triggered
 config :craft, :maximum_log_length, 1_000_000
 
+# max log cache size, in bytes (rocksdb persistence), recommend setting to at least `3 * maximum_entries_per_heartbeat * avg byte size of command``
+#
+# you can estimate a command size with:
+#   `:erlang.external_size(%{__struct__: Craft.Log.CommandEntry, term: 0, command: {:your_example, :command, :here}})``
+#
+# while `external_size` isn't actually the memory usage of a term, it's fast and gives an upper bound.
+#
+# or, just something big if you can afford the ram.
+#
+# defaults to 500mib
+#
+config :craft, :maximum_log_cache_bytes, 500 * 1024 * 1024
+
 heartbeat_interval = 30 # ms
 config :craft, :heartbeat_interval, heartbeat_interval
 

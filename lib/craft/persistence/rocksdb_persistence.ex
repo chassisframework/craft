@@ -7,6 +7,7 @@ defmodule Craft.Persistence.RocksDBPersistence do
   @behaviour Craft.Persistence
 
   alias Craft.Configuration
+  alias Craft.GBTree
 
   require Logger
 
@@ -33,7 +34,10 @@ defmodule Craft.Persistence.RocksDBPersistence do
     :latest_index,
     :latest_term,
     :write_opts,
-    :write_buffer
+    :write_buffer,
+    cache: :gb_trees.empty(),
+    # when we apply the write_buffer, we also need to apply the operations to the cache
+    cache_buffer: []
   ]
 
   @impl true
@@ -78,12 +82,17 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
   @impl true
   def fetch(%__MODULE__{} = state, index) do
-    case :rocksdb.get(state.db, state.log_cf, encode(index), []) do
+    with :none <- :gb_trees.lookup(index, state.cache),
+         :not_found <- :rocksdb.get(state.db, state.log_cf, encode(index), []) do
+      :error
+    else
+      # from cache
+      {:value, entry} ->
+        {:ok, entry}
+
+      # from rocksdb
       {:ok, entry} ->
         {:ok, decode(entry)}
-
-      :not_found ->
-        :error
     end
   end
 
@@ -94,10 +103,28 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
   @impl true
   def fetch_between(%__MODULE__{} = state, index_range) do
-    keys = Enum.map(index_range, &encode/1)
+    {in_cache, not_in_cache} =
+      index_range
+      |> Enum.map(fn index -> {index, :gb_trees.lookup(index, state.cache)} end)
+      |> Enum.split_with(fn {_index, {:value, _}} -> true; {_index, :none} -> false end)
 
-    :rocksdb.multi_get(state.db, state.log_cf, keys, [])
-    |> Enum.map(fn {:ok, entry} -> decode(entry) end)
+    in_cache = Enum.map(in_cache, fn {index, {:value, value}} -> {index, value} end)
+    indexes_not_in_cache = Enum.map(not_in_cache, fn {index, :none} -> index end)
+
+    if Enum.empty?(indexes_not_in_cache) do
+      Keyword.values(in_cache)
+    else
+      disk_keys = Enum.map(indexes_not_in_cache, &encode/1)
+      from_disk =
+        :rocksdb.multi_get(state.db, state.log_cf, disk_keys, [])
+        |> Enum.map(fn {:ok, entry} -> decode(entry) end)
+
+      from_disk = Enum.zip(indexes_not_in_cache, from_disk)
+
+      in_cache ++ from_disk
+      |> Enum.sort_by(fn {index, _value} -> index end)
+      |> Enum.map(fn {_index, value} -> value end)
+    end
   end
 
   @impl true
@@ -108,22 +135,24 @@ defmodule Craft.Persistence.RocksDBPersistence do
   @impl true
   def buffer_append(%__MODULE__{} = state, %_struct{} = entry) do
     write_buffer = state.write_buffer || WriteBuffer.new(state)
-    write_buffer = %{write_buffer | any_log_changes?: true}
-    state = %{state | write_buffer: write_buffer}
 
     index = write_buffer.index + 1
     :ok = :rocksdb.batch_put(write_buffer.batch, state.log_cf, encode(index), encode(entry))
 
     Logger.debug("appended log entry to batch", logger_metadata(trace: {:appended, [entry]}))
 
-    {put_in(state.write_buffer.index, index), index}
+    state = %{
+      state |
+        write_buffer: %{write_buffer | index: index, any_log_changes?: true},
+        cache_buffer: [{:append, index, entry} | state.cache_buffer]
+    }
+
+    {state, index}
   end
 
   @impl true
   def buffer_rewind(%__MODULE__{} = state, index) do
     write_buffer = state.write_buffer || WriteBuffer.new(state)
-    write_buffer = %{write_buffer | any_log_changes?: true}
-    state = %{state | write_buffer: write_buffer}
 
     end_index = max(state.latest_index, write_buffer.index)
 
@@ -131,17 +160,20 @@ defmodule Craft.Persistence.RocksDBPersistence do
       :ok = :rocksdb.batch_delete(write_buffer.batch, state.log_cf, encode(index))
     end)
 
-    put_in(state.write_buffer.index, index)
+    %{
+      state |
+        write_buffer: %{write_buffer | index: index, any_log_changes?: true},
+        cache_buffer: [{:rewind, index}| state.cache_buffer]
+    }
   end
 
   @impl true
   def buffer_metadata_put(%__MODULE__{} = state, metadata) do
     write_buffer = state.write_buffer || WriteBuffer.new(state)
-    state = %{state | write_buffer: write_buffer}
 
     :ok = :rocksdb.batch_put(write_buffer.batch, state.metadata_cf, "metadata", encode(metadata))
 
-    state
+    %{state | write_buffer: write_buffer}
   end
 
   @impl true
@@ -154,7 +186,21 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
       state =
         if state.write_buffer.any_log_changes? do
-          cache_index_and_term_bounds(state)
+          cache =
+            state.cache_buffer
+            |> Enum.reverse()
+            |> Enum.reduce(state.cache, fn
+              {:append, index, entry}, cache ->
+                :gb_trees.enter(index, entry, cache)
+
+              {:rewind, index}, cache ->
+                {cache, _} = GBTree.take_lte(cache, index)
+
+                cache
+            end)
+
+          %{state | cache: cache}
+          |> cache_index_and_term_bounds()
         else
           state
         end
@@ -166,11 +212,28 @@ defmodule Craft.Persistence.RocksDBPersistence do
   end
 
   @impl true
-  def release_buffer(%__MODULE__{write_buffer: nil} = state), do: state
   def release_buffer(%__MODULE__{} = state) do
-    :ok = :rocksdb.release_batch(state.write_buffer.batch)
+    if state.write_buffer do
+      :ok = :rocksdb.release_batch(state.write_buffer.batch)
+    end
 
-    %{state | write_buffer: nil}
+    {t, v} = :timer.tc fn ->
+      :erlang.external_size(state.cache)
+    end
+    IO.inspect t, label: :external_size
+
+    %{state | write_buffer: nil, cache_buffer: []}
+    |> trim_cache()
+  end
+
+  defp trim_cache(state) do
+    if state.cache != :gb_trees.empty() and :erlang.external_size(state.cache) > Application.get_env(:craft, :maximum_log_cache_bytes) do
+      {_, cache} = :gb_trees.take_smallest(state.cache)
+
+      trim_cache(%{state | cache: cache})
+    else
+      state
+    end
   end
 
   @impl true
@@ -189,17 +252,21 @@ defmodule Craft.Persistence.RocksDBPersistence do
 
   @impl true
   def truncate(%__MODULE__{} = state, index, snapshot_entry) do
-    index = encode(index)
+    encoded_index = encode(index)
 
     {:ok, batch} = :rocksdb.batch()
-    :ok = :rocksdb.batch_delete_range(batch, state.log_cf, encode(state.earliest_index), index)
-    :ok = :rocksdb.batch_put(batch, state.log_cf, index, encode(snapshot_entry))
+    :ok = :rocksdb.batch_delete_range(batch, state.log_cf, encode(state.earliest_index), encoded_index)
+    :ok = :rocksdb.batch_put(batch, state.log_cf, encoded_index, encode(snapshot_entry))
     :ok = :rocksdb.write_batch(state.db, batch, state.write_opts)
     :ok = :rocksdb.release_batch(batch)
 
-    cache_index_and_term_bounds(state)
+    {cache, _} = GBTree.take_lte(state.cache, index)
+
+    %{state | cache: cache}
+    |> cache_index_and_term_bounds()
   end
 
+  # TODO: use cache?
   @impl true
   def reverse_find(%__MODULE__{} = state, fun) do
     {:ok, iterator} = :rocksdb.iterator(state.db, state.log_cf, [])

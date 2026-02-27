@@ -5,6 +5,7 @@ defmodule Craft.Machine do
   alias Craft.Configuration
   alias Craft.Consensus
   alias Craft.Consensus.State, as: ConsensusState
+  alias Craft.GBTree
   alias Craft.Log.CommandEntry
   alias Craft.Log.MembershipEntry
   alias Craft.Log.SnapshotEntry
@@ -295,7 +296,7 @@ defmodule Craft.Machine do
     entries_since_last_update = Persistence.fetch_between(log, range_since_last_update)
 
 
-    {read_index_queries, queries_to_execute} = take_gb_tree(state.read_index_queries, apply_up_to)
+    {read_index_queries, queries_to_execute} = GBTree.take_lte(state.read_index_queries, apply_up_to)
     read_index_queries_to_execute = Enum.flat_map(queries_to_execute, &MapSet.to_list/1)
     state = %{
       state |
@@ -344,7 +345,7 @@ defmodule Craft.Machine do
     # answer client queries
     state =
       if state.role == :leader do
-        {client_query_results, results_ready} = take_gb_tree(state.client_query_results, last_quorum_at)
+        {client_query_results, results_ready} = GBTree.take_lte(state.client_query_results, last_quorum_at)
         state = %{state | client_query_results: client_query_results}
 
         for {from, result} <- results_ready do
@@ -998,20 +999,6 @@ defmodule Craft.Machine do
     else
       _ ->
         state
-    end
-  end
-
-  @empty_gb_tree :gb_trees.empty()
-  defp take_gb_tree(state, value, results \\ [])
-  defp take_gb_tree(@empty_gb_tree, _value, results), do: {@empty_gb_tree, results}
-
-  defp take_gb_tree(tree, value, results) do
-    case :gb_trees.take_smallest(tree) do
-      {this_value, result, new_tree} when this_value <= value ->
-        take_gb_tree(new_tree, value, [result | results])
-
-      _ ->
-        {tree, results}
     end
   end
 
