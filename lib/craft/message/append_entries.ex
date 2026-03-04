@@ -14,7 +14,8 @@ defmodule Craft.Message.AppendEntries do
     :leader_commit,
     :leadership_transfer,
     :sent_at,
-    :lease_expires_at
+    :lease_expires_at,
+    :batch_id
   ]
 
   defmodule LeadershipTransfer do
