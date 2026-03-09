@@ -24,7 +24,9 @@ defmodule Craft.MixProject do
       compilers: [:nif] ++ Mix.compilers,
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env),
-      deps: deps()
+      deps: deps(),
+            docs: [main: "readme",
+             extras: ~w[README.md docs/observability.md]]
     ]
   end
 
