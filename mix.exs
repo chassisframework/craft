@@ -24,7 +24,9 @@ defmodule Craft.MixProject do
       compilers: [:nif] ++ Mix.compilers,
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env),
-      deps: deps()
+      deps: deps(),
+            docs: [main: "readme",
+             extras: ~w[README.md docs/observability.md]]
     ]
   end
 
@@ -39,6 +41,7 @@ defmodule Craft.MixProject do
     [
       {:rocksdb, "~> 2.5.0"},
       {:telemetry, "~> 1.0"},
+      {:ex_doc, "~> 0.40.1", only: [:dev]},
       # {:hertz, path: "/Users/mikes/repos/hertz", only: :dev}
     ]
   end
