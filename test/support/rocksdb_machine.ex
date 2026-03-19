@@ -100,7 +100,7 @@ defmodule Craft.RocksDBMachine do
     :noreply
   end
 
-  def handle_query(_, _from, state) do
+  def handle_query(_, _from, _state) do
     {:reply, {:error, :unknown_query}}
   end
 
