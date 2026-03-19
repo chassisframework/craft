@@ -190,15 +190,20 @@ defmodule Craft.Raft do
 
     request_id = :erlang.make_ref()
 
-    with_leader_redirect(name, fn node ->
-      case call_machine(name, node, {:command, {:machine_command, command, request_id}, nil}, timeout) do
-        {:error, error} ->
-          {:error, error, %{request_id: request_id}}
+    result =
+      with_leader_redirect(name, fn node ->
+        case call_machine(name, node, {:command, {:machine_command, command, request_id}, nil}, timeout) do
+          {:error, error} ->
+            {:error, error, %{request_id: request_id}}
 
-        result ->
-          result
-      end
-    end)
+          result ->
+            result
+        end
+      end)
+
+    with {:error, reason} <- result do
+      {:error, reason, %{}}
+    end
   end
 
   # to ensure that a timeout message is sent to the caller, we spawn a process to do the request and wait for the reply instead of sending it directly
@@ -231,6 +236,9 @@ defmodule Craft.Raft do
           after timeout ->
             Kernel.send(caller, {:"$craft_command", request_id, {:error, :timeout, %{request_id: request_id}}})
           end
+
+        {:error, reason} ->
+          Kernel.send(caller, {request_id, {:error, reason, %{}}})
 
         error ->
           Kernel.send(caller, {request_id, error})

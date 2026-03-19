@@ -152,12 +152,20 @@ defmodule Craft.Sandbox do
 
   @doc false
   def command(command, name, _opts) do
-    GenServer.call(find!(), {:command, name, command, _async? = false})
+    result = GenServer.call(find!(), {:command, name, command, _async? = false})
+
+    with {:error, reason} <- result do
+      {:error, reason, %{}}
+    end
   end
 
   @doc false
   def async_command(command, name, _opts) do
-    GenServer.call(find!(), {:command, name, command, _async? = true})
+    result = GenServer.call(find!(), {:command, name, command, _async? = true})
+
+    with {:error, reason} <- result do
+      {:error, reason, %{}}
+    end
   end
 
   @doc false
