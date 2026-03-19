@@ -273,6 +273,7 @@ defmodule Craft do
   @events [
      [:craft, :quorum, :heartbeat],
      [:craft, :quorum, :succeeded],
+     [:craft, :quorum, :miss],
      [:craft, :check_quorum, :succeeded],
      [:craft, :check_quorum, :failed]
    ]
