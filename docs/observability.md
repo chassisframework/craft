@@ -29,7 +29,19 @@ nodes to create a majority.
 Heartbeats are issued every `n` milliseconds (configurable), which is
 called the *heartbeat interval*. In a system operating under normal,
 healthy conditions, quorum is expected to be met once per heartbeat
-interval and within the heartbeat interval.
+interval and within the heartbeat interval. For each heartbeat
+interval, the leader node will await heartbeat responses to establish
+quorum. This is a *quorum round*.
+
+After the round concludes (at the end of the interval), another
+heartbeat is sent from the leader node and awaits follower responses
+for another quorum round. Craft keeps track of the 100 most-recent
+quorum rounds. When another quorum round begins, Craft stops tracking
+the oldest quorum and it is considered to be *aged-out*.
+
+Some heartbeats may arrive at a later quorum rounds than the
+current. See [Heartbeat](#heartbeat) for responses to heartbeats from
+followers.
 
 #### `[:craft, :quorum, :heartbeat]`
 
@@ -51,6 +63,14 @@ The quorum succeded event has two corresponding tags:
   nodes responded.
 - `breathing_room` : The difference between the `heartbeat_interval`
   and the `duration`.
+
+#### `[:craft, :quorum, :miss]`
+
+This telemetry event is emitted by the leader node when a given quorum
+round is aged-out, but there are follower nodes that have not yet
+responded. See `round_expired` in [Heartbeat](#heartbeat) for when a
+follower's heartbeat response arrives after its corresponding round
+has aged-out.
 
 ### Check Quorum
 
@@ -129,7 +149,7 @@ installing a snapshot).
 For every `heartbeat_interval`, heartbeat messages are sent out from the
 leader node to follower nodes as part of establishing and maintaining
 quorum. The leader tracks metrics for each round, going back for about
-100 heartbeats. This is [configurable within Craft (with
+100 quorum rounds. This is [configurable within Craft (with
 `heartbeat_interval`)](https://github.com/chassisframework/craft/blob/343cff89a91449dc997e05d91eca62d09aa90da2/config/config.exs#L23)
 and is set to a default value of`30` milliseconds at the time of
 writing.
@@ -335,15 +355,20 @@ is emitted by the leader.
 These occur when a message was dropped. It may indicate a disconnect
 between nodes.
 
-### `round_expired` Metrics Are Observed at All
+### `quorum miss` and `round_expired` Metrics Are Observed at All
 
-This is the `[:craft, :heartbeat, :reply, :round_expired]` event. It
-is emitted by the leader node.
+These are the `[:craft, :quorum, :miss]` and `[:craft, :heartbeat,
+:reply, :round_expired]` events. They are emitted by the leader node.
 
-This is a more magnified version of `missed_deadline` above. Craft
-stores the heartbeat statistics of the past ~100
-rounds. `round_expired` surfaces when a heartbeat response is so far
-behind that the leader has no memory of the round it relates to.
+Craft stores the heartbeat statistics of the past ~100 quorum
+rounds. When a round ages-out and there are still followers that have
+not responded for that round, the `quorum miss` metric will be
+observed.
+
+`round_expired` is a more magnified version of `missed_deadline`
+above. `round_expired` surfaces when a heartbeat response is so far
+behind that the leader has no memory of the round it relates to (the
+quorum round already aged-out).
 
 ### `lonely` Metric Is Observed with High Frequency
 
