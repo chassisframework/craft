@@ -190,20 +190,11 @@ defmodule Craft.Raft do
 
     request_id = :erlang.make_ref()
 
-    result =
       with_leader_redirect(name, fn node ->
-        case call_machine(name, node, {:command, {:machine_command, command, request_id}, nil}, timeout) do
-          {:error, error} ->
-            {:error, error, %{request_id: request_id}}
-
-          result ->
-            result
+        with {:erorr, error} <- call_machine(name, node, {:command, {:machine_command, command, request_id}, nil}, timeout) do
+          {:error, error, %{request_id: request_id}}
         end
       end)
-
-    with {:error, reason} <- result do
-      {:error, reason, %{}}
-    end
   end
 
   # to ensure that a timeout message is sent to the caller, we spawn a process to do the request and wait for the reply instead of sending it directly
@@ -216,11 +207,7 @@ defmodule Craft.Raft do
     spawn_link(fn ->
       command_sent_reply =
         with_leader_redirect(name, fn node ->
-          case call_machine(name, node, {:command, {:machine_command, command, request_id}, {self(), request_id}}, timeout) do
-            :ok ->
-              :ok
-
-            {:error, error} ->
+          with {:error, error} <- call_machine(name, node, {:command, {:machine_command, command, request_id}, {self(), request_id}}, timeout) do
               {:error, error, %{request_id: request_id}}
           end
         end)
@@ -341,7 +328,7 @@ defmodule Craft.Raft do
       :not_found ->
         Logger.error("No known nodes for group '#{inspect(name)}', have you called Craft.discover/2?")
 
-        {:error, :unknown_group}
+        {:error, :unknown_group, %{}}
     end
   end
 
@@ -351,7 +338,7 @@ defmodule Craft.Raft do
         members = MapSet.delete(members, leader)
 
         if Enum.empty?(members) do
-          {:error, :unknown_leader}
+          {:error, :unknown_leader, %{}}
         else
           do_leader_redirect(name, Enum.random(members), members, func)
         end
@@ -370,7 +357,7 @@ defmodule Craft.Raft do
 
   defp redirect_to_known_leader(name, leader, members, func, previous_redirects) do
     if MapSet.member?(previous_redirects, leader) do
-      {:error, :redirect_loop}
+      {:error, :redirect_loop, %{}}
     else
       MemberCache.update_leader(name, leader)
 
