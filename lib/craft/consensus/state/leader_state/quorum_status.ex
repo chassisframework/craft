@@ -48,11 +48,12 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
         quorum_status.current_round_sent_at + 1
       end
 
-    new_round = %Round{
-      round_sent_at: round_sent_at,
-      empty_write_buffer?: empty_write_buffer?,
-      expected_members: MapSet.delete(state.members.voting_nodes, state.leader_id)
-    }
+    new_round =
+      %Round{
+        round_sent_at: round_sent_at,
+        empty_write_buffer?: empty_write_buffer?,
+        expected_members: MapSet.delete(state.members.voting_nodes, state.leader_id)
+      }
 
     # drop old round if exists
     ## will be {[rounds, ...], [aged_out_round]} -- a nonempty list of
@@ -60,11 +61,12 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
     {rounds, [%Round{expected_members: unresponsive_members}]} = Enum.split(quorum_status.rounds, @num_rounds - 1)
 
     if MapSet.size(unresponsive_members) > 0 do
-      as_list = for follower  <- unresponsive_members do
-        telemetry([:craft, :quorum, :miss], %{}, %{follower: follower})
+      as_list =
+         for follower  <- unresponsive_members do
+           telemetry([:craft, :quorum, :miss], %{}, %{follower: follower})
 
-        follower
-      end
+           follower
+         end
 
       Logger.warning("Round expired without heartbeat responses from expected nodes: #{inspect(as_list)}")
     end

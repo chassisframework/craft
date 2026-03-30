@@ -357,7 +357,7 @@ between nodes.
 
 ### `quorum miss` and `round_expired` Metrics Are Observed at All
 
-This are the `[:craft, :quorum, :miss]` and `[:craft, :heartbeat,
+These are the `[:craft, :quorum, :miss]` and `[:craft, :heartbeat,
 :reply, :round_expired]` events. They are emitted by the leader node.
 
 Craft stores the heartbeat statistics of the past ~100 quorum
