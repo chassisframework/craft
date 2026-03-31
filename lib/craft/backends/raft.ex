@@ -274,7 +274,7 @@ defmodule Craft.Raft do
           :not_found ->
             Logger.error("No known nodes for group '#{inspect(name)}', have you called Craft.discover/2?")
 
-            {:error, :unknown_group}
+            {:error, :unknown_group, %{}}
         end
     end
   end
