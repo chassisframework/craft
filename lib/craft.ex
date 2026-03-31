@@ -134,10 +134,10 @@ defmodule Craft do
   In any distributed system, it's possible to submit a command and not hear the response. This leaves the client in a state where
   it doesn't know if the command was committed by the system or not. Because of this, Craft returns the following error shapes:
 
-  `{:error, reason}`
-    - Craft knows the command has not, and will not ever execute.
+  `{:error, reason, %{}}`
+    - Craft knows the command has not, and will not ever execute (e.g. `:unknown_leader`, `:unknown_group`).
   `{:error, reason, %{request_id: request_id}}`
-    - Craft doesn't know if the command committed, you can then call `Craft.command_status/1` with the given `request_id` to find out.
+    - Craft doesn't know if the command committed, you can then call `Craft.command_status/3` with the given `request_id` to find out.
     - If the given `reason` is one you're expecting (it's from your application state machine), the command has executed and returned the response you asked it to.
 
   See `c:Machine.handle_command/3`.

@@ -67,6 +67,16 @@ defmodule CraftTest do
     assert_receive {:"$craft_command", ^request_id, {:error, :timeout, _}}
   end
 
+  describe "error tuple shape" do
+    test "command/3 returns 3-tuple error when group is unknown" do
+      assert {:error, :unknown_group, %{}} = Craft.command(:anything, :nonexistent_group)
+    end
+
+    test "async_command/3 returns 3-tuple error when group is unknown" do
+      assert {:error, :unknown_group, %{}} = Craft.async_command(:anything, :nonexistent_group)
+    end
+  end
+
   describe "query/3" do
     nexus_test "exits early when timeout is hit", %{name: name, nexus: nexus, leader_leases: leases} do
       wait_until(nexus, {Stability, :all})
