@@ -58,12 +58,12 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
     {rounds, old_round_as_list} = Enum.split(quorum_status.rounds, @num_rounds - 1)
 
     with [old_round] <- old_round_as_list,
-         MapSet.size(old_round.unresponsive_members) > 0 do
-      for follower <- old_round.unresponsive_members do
+         true <- MapSet.size(old_round.expected_members) > 0 do
+      for follower <- old_round.expected_members do
         telemetry([:craft, :quorum, :miss], %{}, %{follower: follower})
       end
 
-      Logger.warning("Round expired without heartbeat responses from expected nodes: #{inspect(MapSet.to_list(old_round.unresponsive_members))}")
+      Logger.warning("Round expired without heartbeat responses from expected nodes: #{inspect(MapSet.to_list(old_round.expected_members))}")
     end
 
     quorum_status =
