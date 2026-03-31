@@ -68,11 +68,11 @@ defmodule CraftTest do
   end
 
   describe "error tuple shape" do
-    nexus_test "command/3 returns 3-tuple error when group is unknown", %{} do
+    test "command/3 returns 3-tuple error when group is unknown" do
       assert {:error, :unknown_group, %{}} = Craft.command(:anything, :nonexistent_group)
     end
 
-    nexus_test "async_command/3 returns 3-tuple error when group is unknown", %{} do
+    test "async_command/3 returns 3-tuple error when group is unknown" do
       assert {:error, :unknown_group, %{}} = Craft.async_command(:anything, :nonexistent_group)
     end
   end
