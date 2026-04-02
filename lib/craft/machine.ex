@@ -865,6 +865,11 @@ defmodule Craft.Machine do
           GenServer.reply(from, error)
 
           state
+
+        {:error, _, _} = error ->
+          GenServer.reply(from, error)
+
+          state
       end
 
     {:noreply, %{state | read_index_tasks: Map.delete(state.read_index_tasks, ref)}}
