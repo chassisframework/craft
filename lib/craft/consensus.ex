@@ -206,6 +206,10 @@ defmodule Craft.Consensus do
     def waiting_to_start({:call, from}, :state, data) do
       {:keep_state_and_data, [{:reply, from, {data, Persistence.dump(data.persistence)}}]}
     end
+    def waiting_to_start(:cast, {:tick, tick_ref}, data) do
+      Message.respond_to_tick(tick_ref, data, :not_leader)
+      :keep_state_and_data
+    end
   end
 
   #
@@ -304,6 +308,7 @@ defmodule Craft.Consensus do
     end
   end
 
+  # Does this need to check that the term is current? 
   def lonely(:cast, %AppendEntries{}, data) do
     {:next_state, :follower, data, [:postpone]}
   end
@@ -320,6 +325,12 @@ defmodule Craft.Consensus do
 
   def lonely(:cast, {:set_last_applied, last_applied}, data) do
     {:keep_state, %{data | last_applied: last_applied}}
+  end
+
+  def lonely(:cast, {:tick, tick_ref}, data) do
+    Message.respond_to_tick(tick_ref, data, :not_leader)
+
+    :keep_state_and_data
   end
 
   def lonely({:call, from}, :state, data) do
@@ -451,6 +462,12 @@ defmodule Craft.Consensus do
 
   def receiving_snapshot(:cast, {:user_command, {caller_pid, _ref} = id, _command}, data) do
     send(caller_pid, {id, not_leader_response(data)})
+
+    :keep_state_and_data
+  end
+
+  def receiving_snapshot(:cast, {:tick, tick_ref}, data) do
+    Message.respond_to_tick(tick_ref, data, :not_leader)
 
     :keep_state_and_data
   end
@@ -644,6 +661,12 @@ defmodule Craft.Consensus do
     {:keep_state, %{data | last_applied: last_applied}}
   end
 
+  def follower(:cast, {:tick, tick_ref}, data) do
+    Message.respond_to_tick(tick_ref, data, :not_leader)
+
+    :keep_state_and_data
+  end
+
   def follower({:call, from}, :state, data) do
     {:keep_state_and_data, [{:reply, from, {data, Persistence.dump(data.persistence)}}]}
   end
@@ -795,6 +818,12 @@ defmodule Craft.Consensus do
     {:keep_state, %{data | last_applied: last_applied}}
   end
 
+  def candidate(:cast, {:tick, tick_ref}, data) do
+    Message.respond_to_tick(tick_ref, data, :not_leader)
+
+    :keep_state_and_data
+  end
+
   def candidate({:call, from}, :state, data) do
     {:keep_state_and_data, [{:reply, from, {data, Persistence.dump(data.persistence)}}]}
   end
@@ -867,7 +896,6 @@ defmodule Craft.Consensus do
     Machine.update_role(data, wait_for_entry_index)
 
     actions = [
-      {:state_timeout, 0, :heartbeat},
       {{:timeout, :check_quorum}, checkquorum_interval(), :check_quorum}
     ]
 
@@ -889,10 +917,6 @@ defmodule Craft.Consensus do
 
       {:keep_state, data, actions}
     end
-  end
-
-  def leader(:state_timeout, :heartbeat, data) do
-    {:keep_state, heartbeat(data), [{:state_timeout, heartbeat_interval(), :heartbeat}]}
   end
 
   def leader({:timeout, :check_quorum}, :check_quorum, data) do
@@ -985,8 +1009,10 @@ defmodule Craft.Consensus do
       # if we're being removed, transfer leadership away first
       if membership_change.action == :remove && membership_change.node == node() do
         data = LeaderState.transfer_leadership(data)
+        {data, messages} = heartbeat(data)
+        Message.send_heartbeats_now(data, messages)
 
-        {:keep_state, heartbeat(data), [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :self_removal}]}
+        {:keep_state, data, [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :self_removal}]}
       else
         {:keep_state, data}
       end
@@ -1006,6 +1032,14 @@ defmodule Craft.Consensus do
     {:next_state, :lonely, data, []}
   end
 
+  def leader(:cast, {:tick, tick_ref}, data) do
+    {data, messages} = heartbeat(data)
+
+    Message.respond_to_tick(tick_ref, data, messages)
+
+    {:keep_state, data}
+  end
+
   def leader(:cast, {:user_command, id, :transfer_leadership}, data) do
     to_node =
       data.members
@@ -1016,7 +1050,10 @@ defmodule Craft.Consensus do
 
     actions = [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :user_requested}]
 
-    {:keep_state, heartbeat(data), actions}
+    {data, messages} = heartbeat(data)
+    Message.send_heartbeats_now(data, messages)
+
+    {:keep_state, data, actions}
   end
 
   # user asked to transfer leadership to existing leader, noop
@@ -1032,7 +1069,10 @@ defmodule Craft.Consensus do
 
       actions = [{{:timeout, :leadership_transfer_failed}, leadership_transfer_timeout(), :user_requested}]
 
-      {:keep_state, heartbeat(data), actions}
+      {data, messages} = heartbeat(data)
+      Message.send_heartbeats_now(data, messages)
+
+      {:keep_state, data, actions}
     else
       send(caller_pid, {id, {:error, :not_voting_member}})
 
@@ -1119,6 +1159,7 @@ defmodule Craft.Consensus do
     time(fn ->
       state = LeaderState.QuorumStatus.start_new_round(state, not Persistence.any_buffered_log_writes?(state.persistence))
 
+      # Update idle state for machine
       state =
         if LeaderState.QuorumStatus.idle?(state) do
           if !state.notified_machine_of_idleness do
@@ -1147,6 +1188,7 @@ defmodule Craft.Consensus do
           put_in(state.notified_machine_of_idleness, false)
         end
 
+      # Maybe extend lease
       state =
         if state.global_clock do
           case GlobalTimestamp.now(state.global_clock) do
@@ -1154,8 +1196,7 @@ defmodule Craft.Consensus do
               # if we're within three heartbeats of lease expiration, bump the lease
               # we don't bump the lease with every heartbeat as it costs latency to write the new lease to disk
               if !state.lease_expires_at or DateTime.diff(state.lease_expires_at.earliest, now.latest, :millisecond) / heartbeat_interval() < 3 do
-                %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
-                |> Metadata.buffer_put()
+                Metadata.buffer_put(%{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)})
               else
                 state
               end
@@ -1171,6 +1212,7 @@ defmodule Craft.Consensus do
 
       state = %{state | persistence: Persistence.commit_buffer(state.persistence)}
 
+      # Prep snapshots for any followers that need it
       state =
         state.members
         |> Members.other_nodes()
@@ -1184,20 +1226,21 @@ defmodule Craft.Consensus do
 
       logger_metadata = :logger.get_process_metadata()
 
-      state.members
-      |> Members.other_nodes()
-      |> Task.async_stream(fn to_node ->
-        :logger.set_process_metadata(logger_metadata)
+      messages = 
+        state.members
+        |> Members.other_nodes()
+        |> Map.new(fn to_node ->
+          :logger.set_process_metadata(logger_metadata)
 
-        if state.leader_state.snapshot_transfers[to_node] do
-          Message.install_snapshot(state, to_node)
-        else
-          Message.append_entries(state, to_node)
-        end
-      end, ordered: false)
-      |> Stream.run()
+          message =
+            if state.leader_state.snapshot_transfers[to_node],
+              do: Message.InstallSnapshot.new(state, to_node),
+              else: Message.AppendEntries.new(state, to_node)
 
-      state
+          {to_node, message}
+        end)
+
+      {state, messages}
     end,
     [:craft, :quorum, :heartbeat],
     %{name: state.name})

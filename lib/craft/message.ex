@@ -3,6 +3,8 @@ defmodule Craft.Message do
 
   alias Craft.Consensus.State
   alias Craft.Consensus.State.Members
+  alias Craft.Consensus.HeartbeatReceiver
+  alias Craft.Consensus.HeartbeatSender
   alias Craft.Message.AppendEntries
   alias Craft.Message.InstallSnapshot
   alias Craft.Message.RequestVote
@@ -23,27 +25,22 @@ defmodule Craft.Message do
     |> send_message(request_vote.candidate_id, state)
   end
 
-  def append_entries(%State{} = state, to_node) do
-    state
-    |> AppendEntries.new(to_node)
-    |> send_message(to_node, state)
-  end
-
   def respond_append_entries(%AppendEntries{} = append_entries, success, %State{} = state) do
-    state
-    |> AppendEntries.Results.new(append_entries, success)
-    |> send_message(append_entries.leader_id, state)
-  end
-
-  def install_snapshot(%State{} = state, to_node) do
-    state
-    |> InstallSnapshot.new(to_node)
-    |> send_message(to_node, state)
+    response = AppendEntries.Results.new(state, append_entries, success)
+    HeartbeatReceiver.add_response(append_entries.leader_id, append_entries.batch_id, state.name, response)
   end
 
   def respond_install_snapshot(%InstallSnapshot{} = install_snapshot, success, %State{state: :receiving_snapshot} = state) do
-    InstallSnapshot.Results.new(install_snapshot, success)
-    |> send_message(install_snapshot.leader_id, state)
+    response = InstallSnapshot.Results.new(install_snapshot, success)
+    HeartbeatReceiver.add_response(install_snapshot.leader_id, install_snapshot.batch_id, state.name, response)
+  end
+
+  def respond_to_tick(tick_ref, %State{} = state, response) do
+    HeartbeatSender.consensus_tick_response(tick_ref, state.name, response)
+  end
+
+  def send_heartbeats_now(%State{} = state, messages) do
+    HeartbeatSender.send_now(state.name, messages)
   end
 
   defp message_sent_telemetry(%AppendEntries{} = append_entries, to_node) do
