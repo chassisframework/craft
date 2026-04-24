@@ -151,7 +151,7 @@ defmodule Craft do
   Asynchronous version of `command/3`, returns a unique `request_id`, then sends a message of the form `{:"$craft_command", request_id, reply}` with the reply to the caller when the command has executed.
 
   If the caller hasn't heard back from the leader by the time the specified timeout is hit, a message of the form `{:"$craft_command", request_id, {:error, :timeout, metadata}}` will be sent to the
-  caller. It's still possible that the result of the command could arrive after that.
+  caller.
 
   The given `request_id` may be used with `command_status/3`, if desired.
   """
