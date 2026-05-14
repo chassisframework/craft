@@ -432,20 +432,22 @@ defmodule Craft.Machine do
     if state.module.__craft_mutable__() do
       snapshot_path = Path.join(state.snapshots_dir, to_string(state.last_applied))
 
-      time(fn ->
-        case state.module.snapshot(snapshot_path, state.private) do
-          :ok ->
-            Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
+      if not File.exists?(snapshot_path) do
+        time(fn ->
+          case state.module.snapshot(snapshot_path, state.private) do
+            :ok ->
+              Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
 
-            :ok = Consensus.snapshot_ready(state.name, state.last_applied, snapshot_info(state.last_applied, state))
+              :ok = Consensus.snapshot_ready(state.name, state.last_applied, snapshot_info(state.last_applied, state))
 
-          # machine decided not to snapshot (perhaps no commands have run)
-          nil ->
-            :noop
-        end
-      end,
-      [:craft, :machine, :user, :snapshot],
-      %{})
+            # machine decided not to snapshot (perhaps no commands have run)
+            nil ->
+              :noop
+          end
+        end,
+        [:craft, :machine, :user, :snapshot],
+        %{})
+      end
     else
       Logger.debug("snapshot ready", logger_metadata(trace: :snapshot_ready))
 
