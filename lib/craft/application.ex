@@ -14,6 +14,8 @@ defmodule Craft.Application do
       {DynamicSupervisor, [strategy: :one_for_one, name: Craft.Supervisor]},
       {Registry, keys: :unique, name: Craft.Registry},
       Craft.MemberCache,
+      Craft.Consensus.HeartbeatSender,
+      Craft.Consensus.HeartbeatReceiver,
       Craft.Sandbox.Manager
     ]
 
@@ -45,6 +47,10 @@ defmodule Craft.Application do
       _ ->
         nil
     end
+  end
+
+  def running_groups() do
+    Registry.select(Craft.Registry, [{{:"$1", :_, :_}, [], [:"$1"]}]) |> Enum.map(fn {group, _component} -> group end) |> Enum.uniq()
   end
 
   if Mix.env() in [:dev, :test] do

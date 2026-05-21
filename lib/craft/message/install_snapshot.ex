@@ -6,7 +6,8 @@ defmodule Craft.Message.InstallSnapshot do
     :leader_id,
     :log_index,
     :log_entry,
-    :snapshot_transfer
+    :snapshot_transfer,
+    :batch_id
   ]
 
   def new(state, for_node) do
