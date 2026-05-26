@@ -385,7 +385,7 @@ defmodule Craft.Consensus do
   end
 
   def receiving_snapshot(:cast, %InstallSnapshot{} = install_snapshot, %State{} = data) do
-    Logger.debug("receiving snapshot", logger_metadata(data, trace: {:receiving_snapshot, install_snapshot}))
+    Logger.info("receiving snapshot", logger_metadata(data, trace: {:receiving_snapshot, install_snapshot}))
 
     data =
       %{data | leader_id: install_snapshot.leader_id}
@@ -403,19 +403,30 @@ defmodule Craft.Consensus do
           :noop
       end
 
-      {:ok, data_dir} = Machine.prepare_to_receive_snapshot(data.name)
+      :ok = Machine.prepare_to_receive_snapshot(data.name)
+
+      # we download to a tmp dir then swap dir pointers to avoid the possibility of a download crashing
+      # in the middle, then on restart, we'd try to start up with a half-downloaded snapshot
+      tmp_dir =
+        Enum.join([
+          "craft_snapshot_download",
+          :erlang.monotonic_time(),
+          :crypto.strong_rand_bytes(16) |> Base.encode16()
+        ])
+
+      tmp_dir = Path.join(System.tmp_dir!(), tmp_dir)
 
       me = self()
       {:ok, pid} =
         SnapshotServerClient.start_link(
           install_snapshot.snapshot_transfer,
-          data_dir,
+          tmp_dir,
           fn
             :ok ->
-              :gen_statem.cast(me, {:download_succeeded, install_snapshot})
+              :gen_statem.cast(me, {:download_succeeded, tmp_dir, install_snapshot})
 
             error ->
-              :gen_statem.cast(me, {:download_failed, error})
+              :gen_statem.cast(me, {:download_failed, tmp_dir, error})
           end
         )
 
@@ -425,21 +436,24 @@ defmodule Craft.Consensus do
     end
   end
 
-  def receiving_snapshot(:cast, {:download_succeeded, %InstallSnapshot{} = install_snapshot}, %State{} = data) do
+  def receiving_snapshot(:cast, {:download_succeeded, snapshot_dir, %InstallSnapshot{} = install_snapshot}, %State{} = data) do
     Logger.debug("snapshot download succeeded", logger_metadata(data, trace: :snapshot_download_succeeded))
 
     persistence = Persistence.truncate(data.persistence, install_snapshot.log_index, install_snapshot.log_entry)
 
-    :ok = Machine.receive_snapshot(data.name, install_snapshot)
+    :ok = Machine.receive_snapshot(data.name, install_snapshot, snapshot_dir)
+
+    File.rm_rf!(snapshot_dir)
 
     Message.respond_install_snapshot(install_snapshot, true, data)
 
     {:next_state, :follower, %{data | persistence: persistence}}
   end
 
-  def receiving_snapshot(:cast, {:download_failed, reason}, %State{} = data) do
+  def receiving_snapshot(:cast, {:download_failed, snapshot_dir, reason}, %State{} = data) do
     Logger.error("error receiving snapshot because: #{inspect reason}, retrying.", logger_metadata(data, trace: {:error_receiving_snapshot, reason}))
 
+    File.rm_rf!(snapshot_dir)
     #TODO: delay?
 
     {:repeat_state, %{data | incoming_snapshot_transfer: nil}}

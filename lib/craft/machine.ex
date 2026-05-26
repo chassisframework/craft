@@ -41,8 +41,8 @@ defmodule Craft.Machine do
 
     @callback last_applied_log_index(private()) :: Craft.log_index() | nil
     @callback snapshot(path :: String.t(), private()) :: :ok | nil
-    @callback prepare_to_receive_snapshot(private()) :: {:ok, data_dir(), private()}
-    @callback receive_snapshot(private()) :: private()
+    @callback prepare_to_receive_snapshot(private()) :: {:ok, private()}
+    @callback receive_snapshot(data_dir(), private()) :: private()
     @callback backup(to_directory :: Path.t(), private()) :: :ok | {:error, any()}
     @callback close(private()) :: private()
   end
@@ -119,10 +119,10 @@ defmodule Craft.Machine do
     |> GenServer.call(:prepare_to_receive_snapshot)
   end
 
-  def receive_snapshot(name, install_snapshot \\ nil) do
+  def receive_snapshot(name, install_snapshot, snapshot_dir) do
     name
     |> lookup(__MODULE__)
-    |> GenServer.call({:receive_snapshot, install_snapshot})
+    |> GenServer.call({:receive_snapshot, install_snapshot, snapshot_dir})
   end
 
   def backup(name, to_directory) do
@@ -737,17 +737,17 @@ defmodule Craft.Machine do
   def handle_call(:prepare_to_receive_snapshot, _from, state) do
     Logger.debug("preparing to receive snapshot", logger_metadata(trace: :preparing_to_receive_snapshot))
 
-    {:ok, data_dir, private} = state.module.prepare_to_receive_snapshot(state.private)
+    {:ok, private} = state.module.prepare_to_receive_snapshot(state.private)
 
-    {:reply, {:ok, data_dir}, %{state | private: private}}
+    {:reply, :ok, %{state | private: private}}
   end
 
-  def handle_call({:receive_snapshot, install_snapshot}, _from, state) do
+  def handle_call({:receive_snapshot, install_snapshot, snapshot_dir}, _from, state) do
     Logger.debug("receiving snapshot", logger_metadata(trace: {:receiving_snapshot, install_snapshot}))
 
     {private, last_applied} =
       if state.module.__craft_mutable__() do
-        private = state.module.receive_snapshot(state.private)
+        private = state.module.receive_snapshot(snapshot_dir, state.private)
         last_applied = state.module.last_applied_log_index(private)
 
         {private, last_applied}
