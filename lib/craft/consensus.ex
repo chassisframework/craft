@@ -455,6 +455,20 @@ defmodule Craft.Consensus do
     :keep_state_and_data
   end
 
+  def receiving_snapshot(:cast, %RequestVote{} = request_vote, data) do
+    Logger.info("denying #{if request_vote.pre_vote, do: "pre-", else: ""}vote to #{request_vote.candidate_id}", logger_metadata(data, trace: {:vote_requested, request_vote, granted?: false, reason: "not lonely"}))
+
+    Message.respond_vote(request_vote, false, data)
+
+    :keep_state_and_data
+  end
+
+  def receiving_snapshot(:cast, msg, data) do
+    Logger.warning("ignoring unexpected message while receiving snapshot: #{inspect msg}", logger_metadata(data))
+
+    :keep_state_and_data
+  end
+
   def receiving_snapshot({:call, from}, {:backup, _to_directory}, _data) do
     {:keep_state_and_data, [{:reply, from, {:error, :receiving_snapshot}}]}
   end
