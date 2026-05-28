@@ -1075,9 +1075,9 @@ defmodule Craft.Machine do
 
   defp md5(file) do
     file
-    |> File.stream!(100_000)
-    |> Enum.reduce(:erlang.md5_init(), &:erlang.md5_update(&2, &1))
-    |> :erlang.md5_final()
+    |> File.stream!(100_000_000)
+    |> Enum.reduce(:crypto.hash_init(:md5), &:crypto.hash_update(&2, &1))
+    |> :crypto.hash_final()
   end
 
   defmacro __using__(opts) do
