@@ -36,7 +36,8 @@ defmodule Craft.RocksDBMachine do
 
   @impl true
   def receive_snapshot(snapshot_dir, state) do
-    :ok = File.rename(snapshot_dir, state.data_dir)
+    File.cp_r!(snapshot_dir, state.data_dir)
+    File.rm_rf!(snapshot_dir)
 
     {:ok, state} = do_init(state)
 
