@@ -83,9 +83,12 @@ defmodule Craft.Message do
     end
   else
     def send_message(message, to_node, state) do
-      message_sent_telemetry(message, to_node)
+      name = state.name
+      spawn fn ->
+        message_sent_telemetry(message, to_node)
 
-      Craft.Consensus.remote_operation(state.name, to_node, :cast, message)
+        Craft.Consensus.remote_operation(name, to_node, :cast, message)
+      end
     end
   end
 end

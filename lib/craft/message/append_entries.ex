@@ -37,7 +37,12 @@ defmodule Craft.Message.AppendEntries do
     {:ok, %{term: prev_log_term}} = Persistence.fetch(state.persistence, prev_log_index)
     max_index = min(Persistence.latest_index(state.persistence), next_index + Consensus.maximum_entries_per_heartbeat())
     index_range = next_index..max_index//1
-    entries = Persistence.fetch_between(state.persistence, index_range)
+    entries =
+      if Range.size(index_range) > 0 do
+        Persistence.fetch_between(state.persistence, index_range)
+      else
+        []
+      end
 
     leadership_transfer =
       case state.leader_state.leadership_transfer do

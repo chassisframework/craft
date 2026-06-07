@@ -286,7 +286,12 @@ defmodule Craft.Machine do
     end)
 
     range_since_last_update = state.apply_up_to+1..apply_up_to//1
-    entries_since_last_update = Persistence.fetch_between(log, range_since_last_update)
+    entries_since_last_update =
+      if Range.size(range_since_last_update) > 0 do
+        Persistence.fetch_between(log, range_since_last_update)
+      else
+        []
+      end
 
     {read_index_queries, queries_to_execute} = take_gb_tree(state.read_index_queries, apply_up_to)
     read_index_queries_to_execute = Enum.flat_map(queries_to_execute, &MapSet.to_list/1)

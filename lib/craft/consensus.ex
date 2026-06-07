@@ -42,14 +42,14 @@ defmodule Craft.Consensus do
 
   @behaviour :gen_statem
 
-  def heartbeat_interval, do: Application.get_env(:craft, :heartbeat_interval, 100)
-  def checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 1000)
-  def lonely_timeout, do: Application.get_env(:craft, :lonely_timeout, 1000)
-  def leader_lease_period, do: Application.get_env(:craft, :leader_lease_period, 800)
+  def heartbeat_interval, do: Application.get_env(:craft, :heartbeat_interval, 30)
+  def checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 9000)
+  def lonely_timeout, do: Application.get_env(:craft, :lonely_timeout, 10_000)
+  def leader_lease_period, do: Application.get_env(:craft, :leader_lease_period, 9_970)
   def election_timeout, do: Application.get_env(:craft, :election_timeout, 1500)
   def election_timeout_jitter, do: Application.get_env(:craft, :election_timeout_jitter, 1500)
   def leadership_transfer_timeout, do: Application.get_env(:craft, :leadership_transfer_timeout, 3000)
-  def maximum_log_length, do: Application.get_env(:craft, :maximum_log_length, 10_000)
+  def maximum_log_length, do: Application.get_env(:craft, :maximum_log_length, 1_000_000)
   def maximum_entries_per_heartbeat, do: Application.get_env(:craft, :maximum_entries_per_heartbeat, 1_000)
 
   if Mix.env == :test do
@@ -565,57 +565,52 @@ defmodule Craft.Consensus do
       end
 
     {success, data} =
-      if Enum.empty?(append_entries.entries) do
-        {true, data}
-      else
-        data = put_in(data.notified_machine_of_idleness, false)
+      case Persistence.fetch(data.persistence, append_entries.prev_log_index) do
+        {:ok, %{term: ^prev_log_term}} ->
+          rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
 
-        case Persistence.fetch(data.persistence, append_entries.prev_log_index) do
-          {:ok, %{term: ^prev_log_term}} ->
-            rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
+          persistence = Persistence.buffer_rewind(data.persistence, append_entries.prev_log_index)
 
-            persistence = Persistence.buffer_rewind(data.persistence, append_entries.prev_log_index)
+          # TODO: buffer all entries at once
+          persistence =
+            Enum.reduce(append_entries.entries, persistence, fn entry, persistence ->
+              {persistence, _index} =  Persistence.buffer_append(persistence, entry)
 
-            persistence =
-              Enum.reduce(append_entries.entries, persistence, fn entry, persistence ->
-                {persistence, _index} =  Persistence.buffer_append(persistence, entry)
+              persistence
+            end)
 
-                persistence
-              end)
+          data = %{data | persistence: Persistence.commit_buffer(persistence)}
 
-            data = %{data | persistence: Persistence.commit_buffer(persistence)}
+          new_membership_entry =
+            append_entries.entries
+            |> Enum.reverse()
+            |> Enum.find(fn
+              %MembershipEntry{} ->
+                true
 
-            new_membership_entry =
-              append_entries.entries
-              |> Enum.reverse()
-              |> Enum.find(fn
-                %MembershipEntry{} ->
-                  true
+              _ ->
+                false
+            end)
+
+          case new_membership_entry do
+            %MembershipEntry{members: members} ->
+              {true, %{data | members: members}}
+
+            # if the entries that we've rewound contained a membership entry, and the incoming entries from the
+            # leader don't include a new membership entry, we need to look back through the log until we find one
+            # to determine the current cluster membership (section 4.1)
+            nil ->
+              Enum.find_value(rewound_entries, {true, data}, fn
+                %MembershipEntry{members: members} ->
+                  {true, %{data | members: members}}
 
                 _ ->
                   false
               end)
+          end
 
-            case new_membership_entry do
-              %MembershipEntry{members: members} ->
-                {true, %{data | members: members}}
-
-              # if the entries that we've rewound contained a membership entry, and the incoming entries from the
-              # leader don't include a new membership entry, we need to look back through the log until we find one
-              # to determine the current cluster membership (section 4.1)
-              nil ->
-                Enum.find_value(rewound_entries, {true, data}, fn
-                  %MembershipEntry{members: members} ->
-                    {true, %{data | members: members}}
-
-                  _ ->
-                    false
-                end)
-            end
-
-          _ ->
-            {false, %{data | persistence: Persistence.rewind(data.persistence, append_entries.prev_log_index - 1)}}
-        end
+        _ ->
+          {false, %{data | persistence: Persistence.rewind(data.persistence, append_entries.prev_log_index - 1)}}
       end
 
     Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
@@ -1078,11 +1073,12 @@ defmodule Craft.Consensus do
 
   def leader({:call, from}, {:command, command}, %State{global_clock: global_clock} = data) when not is_nil(global_clock) do
     case GlobalTimestamp.time_until_lease_expires(data.global_clock, data.lease_expires_at) do
-      {:ok, time} when time > 0 ->
-        handle_command(command, from, data)
-
-      {:ok, 0} ->
-        {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
+      {:ok, time} ->
+        if time > 0 do
+          handle_command(command, from, data)
+        else
+          {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
+        end
 
       error ->
         Logger.error("unable to determine global time for command, got #{inspect error}, becoming follower", logger_metadata(data, trace: :global_clock_failure))
@@ -1179,9 +1175,9 @@ defmodule Craft.Consensus do
         if state.global_clock do
           case GlobalTimestamp.now(state.global_clock) do
             {:ok, now} ->
-              # if we're within three heartbeats of lease expiration, bump the lease
+              # if we're within ten heartbeats of lease expiration, bump the lease
               # we don't bump the lease with every heartbeat as it costs latency to write the new lease to disk
-              if !state.lease_expires_at or DateTime.diff(state.lease_expires_at.earliest, now.latest, :millisecond) / heartbeat_interval() < 3 do
+              if !state.lease_expires_at or DateTime.diff(state.lease_expires_at.earliest, now.latest, :millisecond) / heartbeat_interval() < 10 do
                 %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
                 |> Metadata.buffer_put()
               else

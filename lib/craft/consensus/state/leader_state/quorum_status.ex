@@ -7,7 +7,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
 
   import Craft.Tracing, only: [logger_metadata: 1, telemetry: 3]
 
-  @num_rounds 100
+  @num_rounds 1000
   @rounds_until_idle 10
 
   defstruct [
