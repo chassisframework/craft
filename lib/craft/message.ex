@@ -29,9 +29,9 @@ defmodule Craft.Message do
     |> send_message(to_node, state)
   end
 
-  def respond_append_entries(%AppendEntries{} = append_entries, success, %State{} = state) do
+  def respond_append_entries(%AppendEntries{} = append_entries, success, %State{} = state, entry) do
     state
-    |> AppendEntries.Results.new(append_entries, success)
+    |> AppendEntries.Results.new(append_entries, success, entry)
     |> send_message(append_entries.leader_id, state)
   end
 

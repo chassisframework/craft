@@ -156,7 +156,7 @@ defmodule Craft.Consensus do
       Process.flag(:trap_exit, true)
 
       receive do
-        {:EXIT, ^me, _reason} -> 
+        {:EXIT, ^me, _reason} ->
           Persistence.close(persistence)
 
         msg ->
@@ -564,9 +564,9 @@ defmodule Craft.Consensus do
         data
       end
 
-    {success, data} =
-      case Persistence.fetch(data.persistence, append_entries.prev_log_index) do
-        {:ok, %{term: ^prev_log_term}} ->
+    case Persistence.fetch(data.persistence, append_entries.prev_log_index) do
+      {:ok, entry} ->
+        if entry.term == prev_log_term do
           rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
 
           persistence = Persistence.buffer_rewind(data.persistence, append_entries.prev_log_index)
@@ -594,62 +594,79 @@ defmodule Craft.Consensus do
 
           case new_membership_entry do
             %MembershipEntry{members: members} ->
-              {true, %{data | members: members}}
+              %{data | members: members}
 
             # if the entries that we've rewound contained a membership entry, and the incoming entries from the
             # leader don't include a new membership entry, we need to look back through the log until we find one
             # to determine the current cluster membership (section 4.1)
             nil ->
-              Enum.find_value(rewound_entries, {true, data}, fn
+              Enum.find_value(rewound_entries, data, fn
                 %MembershipEntry{members: members} ->
-                  {true, %{data | members: members}}
+                  %{data | members: members}
 
                 _ ->
                   false
               end)
           end
 
-        _ ->
-          {false, %{data | persistence: Persistence.rewind(data.persistence, append_entries.prev_log_index - 1)}}
-      end
+          Message.respond_append_entries(append_entries, true, data, entry)
 
-    Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
+          apply_up_to = min(append_entries.leader_last_applied, Persistence.latest_index(data.persistence))
 
-    Message.respond_append_entries(append_entries, success, data)
+          if data.last_applied < apply_up_to do
+            Logger.debug("quorum reached", logger_metadata(data, trace: :quorum_reached))
 
-    apply_up_to = min(append_entries.leader_last_applied, Persistence.latest_index(data.persistence))
+            Machine.quorum_reached(data, apply_up_to)
+          end
 
-    if success && data.last_applied < apply_up_to do
-      Logger.debug("quorum reached", logger_metadata(data, trace: :quorum_reached))
+          # we do this after notifying the machine that quorum has been reached so it can bump apply_up_to
+          if Enum.empty?(append_entries.entries) do
+            if !data.notified_machine_of_idleness do
+              log_too_long = Persistence.length(data.persistence) > maximum_log_length()
 
-      Machine.quorum_reached(data, apply_up_to)
-    end
+              Machine.notify_idle(data, log_too_long)
 
-    # we do this after notifying the machine that quorum has been reached so it can bump apply_up_to
-    data =
-      if Enum.empty?(append_entries.entries) do
-        if !data.notified_machine_of_idleness do
-          log_too_long = Persistence.length(data.persistence) > maximum_log_length()
+              put_in(data.notified_machine_of_idleness, true)
+            else
+              data
+            end
+          else
+            put_in(data.notified_machine_of_idleness, false)
+          end
 
-          Machine.notify_idle(data, log_too_long)
+          Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
 
-          put_in(data.notified_machine_of_idleness, true)
+          MemberCache.non_leader_update(data)
+
+          # leader told us to take over leadership if our log is caught up
+          if append_entries.leadership_transfer &&
+               append_entries.leadership_transfer.latest_index == Persistence.latest_index(data.persistence) &&
+               append_entries.leadership_transfer.latest_term == Persistence.latest_term(data.persistence) do
+            {:next_state, :candidate, %{data | leadership_transfer_request_id: append_entries.leadership_transfer.from}}
+          else
+            {:keep_state, data, [become_lonely_timeout()]}
+          end
         else
-          data
+          # we have the entry, but it doesn't match the leader's term
+          Message.respond_append_entries(append_entries, false, data, entry)
+
+          Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
+
+          MemberCache.non_leader_update(data)
+
+          {:keep_state, data, [become_lonely_timeout()]}
         end
-      else
-        put_in(data.notified_machine_of_idleness, false)
-      end
 
-    MemberCache.non_leader_update(data)
+      _ ->
+        # we don't have an entry at the leader's index
+        Message.respond_append_entries(append_entries, false, data, nil)
+        # data = %{data | persistence: Persistence.rewind(data.persistence, append_entries.prev_log_index - 1)}
 
-    # leader told us to take over leadership if our log is caught up
-    if append_entries.leadership_transfer &&
-       append_entries.leadership_transfer.latest_index == Persistence.latest_index(data.persistence) &&
-       append_entries.leadership_transfer.latest_term == Persistence.latest_term(data.persistence) do
-      {:next_state, :candidate, %{data | leadership_transfer_request_id: append_entries.leadership_transfer.from}}
-    else
-      {:keep_state, data, [become_lonely_timeout()]}
+        Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
+
+        MemberCache.non_leader_update(data)
+
+        {:keep_state, data, [become_lonely_timeout()]}
     end
   end
 

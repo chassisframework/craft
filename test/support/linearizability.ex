@@ -72,6 +72,9 @@ defmodule Craft.Linearizability do
         %{request: {:read, _}, response: {:error, _}} ->
           false
 
+        %{request: {:read, _}, response: {:error, _, _metadata}} ->
+          false
+
         _ ->
           true
       end)

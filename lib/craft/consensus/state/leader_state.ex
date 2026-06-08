@@ -205,18 +205,38 @@ defmodule Craft.Consensus.State.LeaderState do
     end
   end
 
-  defp do_handle_append_entries_results(%State{} = state, %AppendEntries.Results{success: false} = results) do
-    case Persistence.fetch(state.persistence, results.latest_index) do
-      {:ok, entry} ->
-        if entry.term == results.latest_term do
-          # the follower's log doesn't need rewinding
-          state = put_in(state.leader_state.match_indices[results.from], results.latest_index)
-          put_in(state.leader_state.next_indices[results.from], results.latest_index + 1)
+  # follower has an entry at the prev_index, but its the wrong term
+  defp do_handle_append_entries_results(%State{} = state, %AppendEntries.Results{success: false, conflict_term: conflict_term} = results) when is_integer(conflict_term) do
+    # we don't know where we match the follower's log
+    state = put_in(state.leader_state.match_indices[results.from], 0)
+
+    case latest_index_for_term(state.persistence, conflict_term) do
+      # if we have any entries of their term, start from right after our latest
+      {:ok, index} ->
+        put_in(state.leader_state.next_indices[results.from], index + 1)
+
+      # otherwise skip that term entirely (jump to where the follower thinks the term started)
+      {:error, :no_term} ->
+        put_in(state.leader_state.next_indices[results.from], results.conflict_index)
+
+      # we fell off the beginning of our log in the middle of trying to find the earliest entry for the conflict term
+      {:error, :needs_snapshot} ->
+        if state.machine.__craft_mutable__() do
+          create_snapshot_transfer(state, results.from)
         else
-          # we don't know where we match the follower's log
-          state = put_in(state.leader_state.match_indices[results.from], 0)
-          put_in(state.leader_state.next_indices[results.from], results.latest_index - 1)
+          state
         end
+    end
+  end
+
+  # follower didn't even have the prev_index we sent, its log is too short, start from its last index
+  defp do_handle_append_entries_results(%State{} = state, %AppendEntries.Results{success: false} = results) do
+    # we don't know where we match the follower's log
+    state = put_in(state.leader_state.match_indices[results.from], 0)
+
+    case Persistence.fetch(state.persistence, results.latest_index) do
+      {:ok, _entry} ->
+        put_in(state.leader_state.next_indices[results.from], results.latest_index + 1)
 
       :error ->
         if state.machine.__craft_mutable__() do
@@ -224,6 +244,24 @@ defmodule Craft.Consensus.State.LeaderState do
         else
           state
         end
+    end
+  end
+
+  defp latest_index_for_term(persistence, term), do: do_latest_index_for_term(persistence, term, Persistence.latest_index(persistence))
+
+  defp do_latest_index_for_term(persistence, term, index) do
+    case Persistence.fetch(persistence, index) do
+      {:ok, %{term: ^term}} ->
+        {:ok, index}
+
+      {:ok, %{term: t}} when t < term ->
+        {:error, :no_term}
+
+      {:ok, _} ->
+        do_latest_index_for_term(persistence, term, index - 1)
+
+      nil ->
+        {:error, :needs_snapshot}
     end
   end
 

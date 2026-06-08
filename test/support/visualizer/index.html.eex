@@ -64,8 +64,8 @@
         <% {:vote_requested, msg, info} -> %>
             {id: <%= id %>, group: '<%= group_id(event) %>', content: (<%= msg.pre_vote %> ? "pre-" : "") + 'vote ' + (<%= info[:granted?] %> ? 'granted' : 'denied') , start: '<%= event.meta.t %>', title: '<%= format_struct(msg) %>'},
 
-        <% {:sent_msg, _to, _from, msg} -> %>
-            {id: <%= id %>, group: '<%= group_id(event) %>', content: 'sent <%= message_type(msg) %>', start: '<%= event.meta.t %>', title: '<%= format_struct(msg) %>'},
+        <% {:sent_msg, to, _from, msg} -> %>
+            {id: <%= id %>, group: '<%= group_id(event) %>', content: 'sent <%= message_type(msg) %>', start: '<%= event.meta.t %>', title: 'to: <%= inspect to %>\n<%= format_struct(msg) %>'},
 
         <% {:dropped_msg, to, msg} -> %>
             {id: <%= id %>, group: '<%= group_id(event) %>', content: 'DROPPED <%= message_type(msg) %> to <%= to %>', start: '<%= event.meta.t %>', title: '<%= format_struct(msg) %>'},

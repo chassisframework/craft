@@ -5,6 +5,7 @@ defmodule Craft.ElectionTest do
   alias Craft.Log.EmptyEntry
   alias Craft.Nexus.Stability
   alias Craft.Persistence
+  alias Craft.Persistence.Metadata
   alias Craft.TestGroup
 
   describe "5.4.1 election restriction" do
@@ -31,7 +32,8 @@ defmodule Craft.ElectionTest do
               |> Persistence.append(%EmptyEntry{term: 3})
               |> Persistence.append(%EmptyEntry{term: 3})
 
-            %{state | state: :candidate, persistence: out_of_date_log}
+            %{state | state: :candidate, persistence: out_of_date_log, current_term: 3}
+            |> Metadata.write()
           end
         end)
 
@@ -52,7 +54,8 @@ defmodule Craft.ElectionTest do
                 |> Persistence.append(%EmptyEntry{term: 4})
                 |> Persistence.append(%EmptyEntry{term: 4})
 
-              %{state | persistence: majority_log}
+              %{state | persistence: majority_log, current_term: 4}
+              |> Metadata.write()
             end
         end)
       end
@@ -94,7 +97,8 @@ defmodule Craft.ElectionTest do
               |> Persistence.append(%EmptyEntry{term: 4})
               |> Persistence.append(%EmptyEntry{term: 4})
 
-            %{state | state: :candidate, persistence: up_to_date_log}
+            %{state | state: :candidate, persistence: up_to_date_log, current_term: 4}
+            |> Metadata.write()
           end
         end)
 
@@ -117,7 +121,8 @@ defmodule Craft.ElectionTest do
                 |> Persistence.append(%EmptyEntry{term: 3})
                 |> Persistence.append(%EmptyEntry{term: 3})
 
-              %{state | persistence: out_of_date_log}
+              %{state | persistence: out_of_date_log, current_term: 3}
+              |> Metadata.write()
             end
         end)
       end
