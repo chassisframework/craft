@@ -1,7 +1,7 @@
 defmodule Craft.Message.AppendEntries do
-  alias Craft.Consensus
   alias Craft.Consensus.State
   alias Craft.Consensus.State.LeaderState
+  alias Craft.Consensus.State.LeaderState.CongestionControl
   alias Craft.Persistence
   alias Craft.Message.AppendEntries.LeadershipTransfer
 
@@ -35,7 +35,7 @@ defmodule Craft.Message.AppendEntries do
     next_index = Map.get(state.leader_state.next_indices, to_node)
     prev_log_index = next_index - 1
     {:ok, %{term: prev_log_term}} = Persistence.fetch(state.persistence, prev_log_index)
-    max_index = min(Persistence.latest_index(state.persistence), next_index + Consensus.maximum_entries_per_heartbeat())
+    max_index = min(Persistence.latest_index(state.persistence), next_index + CongestionControl.num_entries(state, to_node))
     index_range = next_index..max_index//1
     entries =
       if Range.size(index_range) > 0 do

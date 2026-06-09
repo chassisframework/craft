@@ -1,6 +1,7 @@
 defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
   alias Craft.Consensus
   alias Craft.Consensus.State
+  alias Craft.Consensus.State.LeaderState.CongestionControl
   alias Craft.Message.AppendEntries
 
   require Logger
@@ -38,6 +39,27 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
   def start_new_round(%State{} = state, empty_write_buffer?) do
     quorum_status = state.leader_state.quorum_status
 
+    {rounds, expired_round_as_list} = Enum.split(quorum_status.rounds, @num_rounds - 1)
+
+    with [expired_round] <- expired_round_as_list,
+         true <- MapSet.size(expired_round.expected_members) > 0 do
+      for follower <- expired_round.expected_members do
+        telemetry([:craft, :quorum, :miss], %{}, %{follower: follower})
+      end
+
+      Logger.warning("Round expired without heartbeat responses from expected nodes: #{inspect(MapSet.to_list(expired_round.expected_members))}")
+    end
+
+    state =
+      with [previous_round | _rest] <- quorum_status.rounds,
+           true <- MapSet.size(previous_round.expected_members) > 0 do
+        Enum.reduce(previous_round.expected_members, state, &CongestionControl.follower_lagging(&2, &1))
+      else
+        _ ->
+          state
+      end
+
+
     # the monotonic clock is not strictly increasing, so it can freeze unboundedly.
     # if that happens, we add a millisecond to the last round's value to continue generating unique consensus round ids
     now = :erlang.monotonic_time(:millisecond)
@@ -54,17 +76,6 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
         empty_write_buffer?: empty_write_buffer?,
         expected_members: MapSet.delete(state.members.voting_nodes, state.leader_id)
       }
-
-    {rounds, old_round_as_list} = Enum.split(quorum_status.rounds, @num_rounds - 1)
-
-    with [old_round] <- old_round_as_list,
-         true <- MapSet.size(old_round.expected_members) > 0 do
-      for follower <- old_round.expected_members do
-        telemetry([:craft, :quorum, :miss], %{}, %{follower: follower})
-      end
-
-      Logger.warning("Round expired without heartbeat responses from expected nodes: #{inspect(MapSet.to_list(old_round.expected_members))}")
-    end
 
     quorum_status =
       %{quorum_status |
@@ -149,6 +160,13 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
         {false, false, false, state}
 
       {should_handle?, should_notify?, follower_lagging?, quorum_status} ->
+        state =
+          if not follower_lagging? do
+            CongestionControl.follower_ok(state, results.from)
+          else
+            state
+          end
+
         {should_handle?, should_notify?, follower_lagging?, put_in(state.leader_state.quorum_status, quorum_status)}
     end
   end

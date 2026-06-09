@@ -7,7 +7,7 @@ defmodule Craft.Linearizability.Visualization do
 
   EEx.function_from_file(:def, :render, @template, [:assigns])
 
-  def to_file(linearized_operations) do
+  def to_file(_linearized_operations) do
     {linearized_operations, ignored_operations} = File.read!("/Users/mikes/repos/craft/history") |> :erlang.binary_to_term()#|> Enum.take(20)
 
     operations =

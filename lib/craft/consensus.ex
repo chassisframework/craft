@@ -43,14 +43,14 @@ defmodule Craft.Consensus do
   @behaviour :gen_statem
 
   def heartbeat_interval, do: Application.get_env(:craft, :heartbeat_interval, 30)
-  def checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 9000)
+  def checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 300)
   def lonely_timeout, do: Application.get_env(:craft, :lonely_timeout, 10_000)
   def leader_lease_period, do: Application.get_env(:craft, :leader_lease_period, 9_970)
   def election_timeout, do: Application.get_env(:craft, :election_timeout, 1500)
   def election_timeout_jitter, do: Application.get_env(:craft, :election_timeout_jitter, 1500)
   def leadership_transfer_timeout, do: Application.get_env(:craft, :leadership_transfer_timeout, 3000)
   def maximum_log_length, do: Application.get_env(:craft, :maximum_log_length, 1_000_000)
-  def maximum_entries_per_heartbeat, do: Application.get_env(:craft, :maximum_entries_per_heartbeat, 1_000)
+  def maximum_entries_per_heartbeat, do: Application.get_env(:craft, :maximum_entries_per_heartbeat, 10_000)
 
   if Mix.env == :test do
     # min floor prevents some flake in election tests
@@ -567,47 +567,62 @@ defmodule Craft.Consensus do
     case Persistence.fetch(data.persistence, append_entries.prev_log_index) do
       {:ok, entry} ->
         if entry.term == prev_log_term do
-          rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
+          data =
+            if append_entries.entries != [] do
+              incoming_last_entry_index = append_entries.prev_log_index + length(append_entries.entries)
+              %{term: incoming_last_entry_term} = List.last(append_entries.entries)
 
-          persistence = Persistence.buffer_rewind(data.persistence, append_entries.prev_log_index)
-
-          # TODO: buffer all entries at once
-          persistence =
-            Enum.reduce(append_entries.entries, persistence, fn entry, persistence ->
-              {persistence, _index} =  Persistence.buffer_append(persistence, entry)
-
-              persistence
-            end)
-
-          data = %{data | persistence: Persistence.commit_buffer(persistence)}
-
-          new_membership_entry =
-            append_entries.entries
-            |> Enum.reverse()
-            |> Enum.find(fn
-              %MembershipEntry{} ->
-                true
-
-              _ ->
-                false
-            end)
-
-          case new_membership_entry do
-            %MembershipEntry{members: members} ->
-              %{data | members: members}
-
-            # if the entries that we've rewound contained a membership entry, and the incoming entries from the
-            # leader don't include a new membership entry, we need to look back through the log until we find one
-            # to determine the current cluster membership (section 4.1)
-            nil ->
-              Enum.find_value(rewound_entries, data, fn
-                %MembershipEntry{members: members} ->
-                  %{data | members: members}
+              case Persistence.fetch(data.persistence, incoming_last_entry_index) do
+                %{term: ^incoming_last_entry_term} ->
+                  # we've already appended these entries, it's probably an in-flight retry
+                  %{data | persistence: Persistence.commit_buffer(data.persistence)}
 
                 _ ->
-                  false
-              end)
-          end
+                  rewound_entries = Persistence.fetch_from(data.persistence, append_entries.prev_log_index + 1)
+
+                  persistence = Persistence.buffer_rewind(data.persistence, append_entries.prev_log_index)
+
+                  # TODO: buffer all entries at once
+                  persistence =
+                    Enum.reduce(append_entries.entries, persistence, fn entry, persistence ->
+                      {persistence, _index} =  Persistence.buffer_append(persistence, entry)
+
+                      persistence
+                    end)
+
+                  data = %{data | persistence: Persistence.commit_buffer(persistence)}
+
+                  new_membership_entry =
+                    append_entries.entries
+                    |> Enum.reverse()
+                    |> Enum.find(fn
+                      %MembershipEntry{} ->
+                        true
+
+                      _ ->
+                        false
+                    end)
+
+                  case new_membership_entry do
+                    %MembershipEntry{members: members} ->
+                      %{data | members: members}
+
+                    # if the entries that we've rewound contained a membership entry, and the incoming entries from the
+                    # leader don't include a new membership entry, we need to look back through the log until we find one
+                    # to determine the current cluster membership (section 4.1)
+                    nil ->
+                      Enum.find_value(rewound_entries, data, fn
+                        %MembershipEntry{members: members} ->
+                          %{data | members: members}
+
+                        _ ->
+                          false
+                      end)
+                  end
+              end
+            else
+              %{data | persistence: Persistence.commit_buffer(data.persistence)}
+            end
 
           Message.respond_append_entries(append_entries, true, data, entry)
 
@@ -648,6 +663,8 @@ defmodule Craft.Consensus do
           end
         else
           # we have the entry, but it doesn't match the leader's term
+          data = %{data | persistence: Persistence.commit_buffer(data.persistence)}
+
           Message.respond_append_entries(append_entries, false, data, entry)
 
           Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
@@ -659,8 +676,9 @@ defmodule Craft.Consensus do
 
       _ ->
         # we don't have an entry at the leader's index
+        data = %{data | persistence: Persistence.commit_buffer(data.persistence)}
+
         Message.respond_append_entries(append_entries, false, data, nil)
-        # data = %{data | persistence: Persistence.rewind(data.persistence, append_entries.prev_log_index - 1)}
 
         Logger.debug("leader heartbeat from #{append_entries.leader_id}, restarting timer", logger_metadata(data))
 

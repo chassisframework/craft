@@ -1,6 +1,7 @@
 defmodule Craft.Consensus.State.LeaderState do
   alias Craft.Consensus.State
   alias Craft.Consensus.State.LeaderState.QuorumStatus
+  alias Craft.Consensus.State.LeaderState.CongestionControl
   alias Craft.Consensus.State.Members
   alias Craft.Log.MembershipEntry
   alias Craft.Machine
@@ -20,6 +21,7 @@ defmodule Craft.Consensus.State.LeaderState do
     :membership_change,
     :leadership_transfer,
     :quorum_status,
+    :congestion_control,
     :waiting_for_lease,
     commit_index: 0,
     snapshot_transfers: %{}
@@ -73,7 +75,8 @@ defmodule Craft.Consensus.State.LeaderState do
     %__MODULE__{
       next_indices: next_indices,
       match_indices: match_indices,
-      quorum_status: QuorumStatus.new()
+      quorum_status: QuorumStatus.new(),
+      congestion_control: CongestionControl.new()
     }
   end
 

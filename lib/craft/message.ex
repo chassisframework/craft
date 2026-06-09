@@ -26,7 +26,7 @@ defmodule Craft.Message do
   def append_entries(%State{} = state, to_node) do
     state
     |> AppendEntries.new(to_node)
-    |> send_message(to_node, state)
+    |> send_message(to_node, state, false)
   end
 
   def respond_append_entries(%AppendEntries{} = append_entries, success, %State{} = state, entry) do
@@ -38,7 +38,7 @@ defmodule Craft.Message do
   def install_snapshot(%State{} = state, to_node) do
     state
     |> InstallSnapshot.new(to_node)
-    |> send_message(to_node, state)
+    |> send_message(to_node, state, false)
   end
 
   def respond_install_snapshot(%InstallSnapshot{} = install_snapshot, success, %State{state: :receiving_snapshot} = state) do
@@ -73,7 +73,7 @@ defmodule Craft.Message do
   if Mix.env() == :test do
     require Logger
 
-    def send_message(message, to_node, state) do
+    def send_message(message, to_node, state, _spawn) do
       import Craft.Tracing, only: [logger_metadata: 2]
 
       message_sent_telemetry(message, to_node)
@@ -82,12 +82,19 @@ defmodule Craft.Message do
       Logger.debug("sent #{inspect message.__struct__}", logger_metadata(state, trace: {:sent_msg, to_node, node(), message}))
     end
   else
-    def send_message(message, to_node, state) do
-      name = state.name
-      spawn fn ->
+    # append_entries and install_snapshot already spawn in their own process via Consensus
+    def send_message(message, to_node, state, spawn \\ true) do
+      if spawn do
+        name = state.name
+        spawn fn ->
+          message_sent_telemetry(message, to_node)
+
+          Craft.Consensus.remote_operation(name, to_node, :cast, message)
+        end
+      else
         message_sent_telemetry(message, to_node)
 
-        Craft.Consensus.remote_operation(name, to_node, :cast, message)
+        Craft.Consensus.remote_operation(state.name, to_node, :cast, message)
       end
     end
   end
