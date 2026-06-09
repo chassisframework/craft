@@ -43,7 +43,7 @@ defmodule Craft.Consensus do
   @behaviour :gen_statem
 
   def heartbeat_interval, do: Application.get_env(:craft, :heartbeat_interval, 30)
-  def checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 300)
+  def checkquorum_interval, do: Application.get_env(:craft, :checkquorum_interval, 5_000)
   def lonely_timeout, do: Application.get_env(:craft, :lonely_timeout, 10_000)
   def leader_lease_period, do: Application.get_env(:craft, :leader_lease_period, 9_970)
   def election_timeout, do: Application.get_env(:craft, :election_timeout, 1500)
@@ -940,6 +940,12 @@ defmodule Craft.Consensus do
       else
         Logger.info("became leader, immediately taking lease", logger_metadata(data, trace: {:became, :leader}))
 
+        data = put_in(data.leader_state.waiting_for_lease, false)
+
+        MemberCache.update_lease_holder(data, data.lease_expires_at)
+
+        Machine.lease_taken(data)
+
         {:keep_state, data, actions}
       end
     else
@@ -978,7 +984,7 @@ defmodule Craft.Consensus do
 
           data = put_in(data.leader_state.waiting_for_lease, false)
 
-          MemberCache.update_lease_holder(data)
+          MemberCache.update_lease_holder(data, data.lease_expires_at)
 
           Machine.lease_taken(data)
 
@@ -1176,7 +1182,33 @@ defmodule Craft.Consensus do
 
   defp heartbeat(%State{} = state) do
     time(fn ->
-      state = LeaderState.QuorumStatus.start_new_round(state, not Persistence.any_buffered_log_writes?(state.persistence))
+      state =
+        if state.global_clock do
+          case GlobalTimestamp.now(state.global_clock) do
+            {:ok, now} ->
+              # if we're within ten heartbeats of lease expiration, bump the lease
+              # we don't bump the lease with every heartbeat as it costs latency to write the new lease to disk
+              if !state.lease_expires_at or DateTime.diff(state.lease_expires_at.earliest, now.latest, :millisecond) / heartbeat_interval() < 10 do
+                %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
+                |> Metadata.buffer_put()
+              else
+                state
+              end
+
+            error ->
+              Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state, trace: :global_clock_failure))
+
+              throw({:next_state, :lonely, state})
+          end
+        else
+          state
+        end
+
+      empty_write_buffer? = not Persistence.any_buffered_log_writes?(state.persistence)
+
+      state = %{state | persistence: Persistence.commit_buffer(state.persistence)}
+
+      state = LeaderState.QuorumStatus.start_new_round(state, empty_write_buffer?)
 
       state =
         if LeaderState.QuorumStatus.idle?(state) do
@@ -1205,30 +1237,6 @@ defmodule Craft.Consensus do
         else
           put_in(state.notified_machine_of_idleness, false)
         end
-
-      state =
-        if state.global_clock do
-          case GlobalTimestamp.now(state.global_clock) do
-            {:ok, now} ->
-              # if we're within ten heartbeats of lease expiration, bump the lease
-              # we don't bump the lease with every heartbeat as it costs latency to write the new lease to disk
-              if !state.lease_expires_at or DateTime.diff(state.lease_expires_at.earliest, now.latest, :millisecond) / heartbeat_interval() < 10 do
-                %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
-                |> Metadata.buffer_put()
-              else
-                state
-              end
-
-            error ->
-              Logger.error("unable to determine global time, got #{inspect error}, becoming follower", logger_metadata(state, trace: :global_clock_failure))
-
-              throw({:next_state, :lonely, state})
-          end
-        else
-          state
-        end
-
-      state = %{state | persistence: Persistence.commit_buffer(state.persistence)}
 
       state =
         state.members

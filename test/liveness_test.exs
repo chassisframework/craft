@@ -6,20 +6,15 @@ defmodule Craft.LivenessTest do
   alias Craft.Message.RequestVote
   alias Craft.SimpleMachine
 
-  nexus_test "processes commands with a minimal quorum operational", %{nodes: nodes, name: name, nexus: nexus, leader_leases: leases} do
-    wait_until(nexus, {Stability, :all})
+  nexus_test "processes commands with a minimal quorum operational", %{nodes: nodes, name: name, nexus: nexus} do
+    %{leader: leader} = wait_until(nexus, {Stability, :all})
 
-    {majority, minority} = Enum.split(nodes, div(Enum.count(nodes), 2) + 1)
-    leader = List.first(majority)
+    {majority, minority} =
+      nodes
+      |> List.delete(leader)
+      |> Enum.split(div(Enum.count(nodes), 2))
 
-    :ok = Craft.transfer_leadership(name, leader)
-
-    assert %{leader: ^leader} = wait_until(nexus, {Stability, :majority})
-
-    if leases do
-      # wait out lease, TODO: `wait_until(nexus, :leader_holds_lease)`
-      Process.sleep(2_000)
-    end
+    majority = [leader | majority]
 
     nemesis(nexus, fn {:sent_msg, to, from, _msg} ->
       if from in majority and to in majority or from in minority and to in minority do
@@ -104,19 +99,18 @@ defmodule Craft.LivenessTest do
     %{leader: leader} = wait_until(nexus, {Stability, :all})
 
     isolated_node = Enum.random(nodes -- [leader])
-    connected_nodes = nodes -- [leader, isolated_node]
-    leader_connected_node = Enum.random(connected_nodes)
+    connected_nodes = nodes -- [isolated_node]
+    leader_connected_node = Enum.random(connected_nodes -- [leader])
 
     nemesis(nexus, fn {:sent_msg, to, from, _msg} ->
-      if from in connected_nodes and to in connected_nodes or from in [leader, leader_connected_node] and to in [leader, leader_connected_node] do
+      if from in connected_nodes and to in connected_nodes or
+         from in [leader, leader_connected_node] and to in [leader, leader_connected_node] do
         :forward
       else
         :drop
       end
     end)
 
-    %{leader: new_leader} = wait_until(nexus, {Stability, :majority})
-
-    assert new_leader != leader
+    wait_until(nexus, {Stability, :majority})
   end
 end

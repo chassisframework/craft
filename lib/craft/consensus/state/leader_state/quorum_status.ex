@@ -21,6 +21,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
     defstruct [
       :round_sent_at,
       :empty_write_buffer?,
+      :lease_expires_at,
       heartbeats: %{},
       expected_members: MapSet.new()
     ]
@@ -74,7 +75,8 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
       %Round{
         round_sent_at: round_sent_at,
         empty_write_buffer?: empty_write_buffer?,
-        expected_members: MapSet.delete(state.members.voting_nodes, state.leader_id)
+        expected_members: MapSet.delete(state.members.voting_nodes, state.leader_id),
+        lease_expires_at: state.lease_expires_at
       }
 
     quorum_status =
@@ -86,7 +88,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
     put_in(state.leader_state.quorum_status, quorum_status)
   end
 
-  # {should_handle?, round_is_most_recent_and_just_succeeded?, follower_lagging?, state}
+  # {should_handle?, {round_is_most_recent_and_just_succeeded? = true, lease_expires_at} | false, follower_lagging?, state}
   def heartbeat_response_received(%State{} = state, %AppendEntries.Results{} = results) do
     received_at = :erlang.monotonic_time(:millisecond)
     quorum_status = state.leader_state.quorum_status
@@ -143,7 +145,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
 
             rounds = List.flatten([Enum.reverse(recent_rounds), %{round | heartbeats: heartbeats, expected_members: MapSet.delete(round.expected_members, results.from)}, rest])
 
-            {:halt, {true, round_is_most_recent_and_just_succeeded?, follower_lagging?, %{quorum_status | rounds: rounds}}}
+            {:halt, {true, {round_is_most_recent_and_just_succeeded?, round.lease_expires_at}, follower_lagging?, %{quorum_status | rounds: rounds}}}
           else
             {:cont, {[round | recent_rounds], rest}}
           end

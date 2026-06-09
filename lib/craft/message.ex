@@ -73,7 +73,7 @@ defmodule Craft.Message do
   if Mix.env() == :test do
     require Logger
 
-    def send_message(message, to_node, state, _spawn) do
+    def send_message(message, to_node, state, _spawn \\ true) do
       import Craft.Tracing, only: [logger_metadata: 2]
 
       message_sent_telemetry(message, to_node)

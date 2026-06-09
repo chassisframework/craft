@@ -6,6 +6,7 @@ defmodule Craft.Consensus.State.LeaderState do
   alias Craft.Log.MembershipEntry
   alias Craft.Machine
   alias Craft.MemberCache
+  alias Craft.MemberCache.GroupStatus
   alias Craft.Persistence
   alias Craft.Message.AppendEntries
   alias Craft.Message.InstallSnapshot
@@ -128,9 +129,7 @@ defmodule Craft.Consensus.State.LeaderState do
   end
 
   def handle_append_entries_results(%State{} = state, %AppendEntries.Results{} = results) do
-    # need to implement flow control in response to how laggy (and how laggy over time) a follower is
-    # e.g. don't send larger messages until previous smaller messages can be acked
-    {handle_results?, notify_machine?, _follower_lagging?, state} =
+    {handle_results?, quorum_info, _follower_lagging?, state} =
       if Members.can_vote?(state.members, results.from) do
         QuorumStatus.heartbeat_response_received(state, results)
       else
@@ -147,14 +146,21 @@ defmodule Craft.Consensus.State.LeaderState do
 
     MemberCache.leader_update(state)
 
-    if notify_machine? do
-      Logger.debug("quorum reached", logger_metadata(state, trace: :quorum_reached))
+    case quorum_info do
+      {true, lease_expires_at} ->
+        Logger.debug("quorum reached", logger_metadata(state, trace: :quorum_reached))
 
-      if state.lease_expires_at && !state.leader_state.waiting_for_lease do
-        MemberCache.update_lease_holder(state)
-      end
+        if state.lease_expires_at && !state.leader_state.waiting_for_lease do
+          {:ok, %GroupStatus{lease_holder: {_, _, old_lease_expires_at}}} = MemberCache.get(state.name)
+          if old_lease_expires_at != lease_expires_at do
+            MemberCache.update_lease_holder(state, lease_expires_at)
+          end
+        end
 
-      Machine.quorum_reached(state, state.leader_state.commit_index)
+        Machine.quorum_reached(state, state.leader_state.commit_index)
+
+      {false, _} ->
+        :noop
     end
 
     state

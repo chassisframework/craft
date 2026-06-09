@@ -175,8 +175,8 @@ defmodule Craft.MemberCache do
   end
 
   @doc false
-  def update_lease_holder(%ConsensusState{} = state) do
-    :ets.update_element(__MODULE__, state.name, {index(:lease_holder), {node(), state.global_clock, state.lease_expires_at}})
+  def update_lease_holder(%ConsensusState{} = state, lease_expires_at) do
+    :ets.update_element(__MODULE__, state.name, {index(:lease_holder), {node(), state.global_clock, lease_expires_at}})
   end
 
   def set_leader_ready(group_name, leader_ready) do

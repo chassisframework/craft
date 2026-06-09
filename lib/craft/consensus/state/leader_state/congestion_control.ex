@@ -9,12 +9,14 @@ defmodule Craft.Consensus.State.LeaderState.CongestionControl do
 
   defstruct [entries_per_message: %{}]
 
+  @starting_num_entries 1_000
+
   def new do
     %__MODULE__{}
   end
 
   def follower_lagging(%State{} = state, follower) do
-    num_entries = state.leader_state.congestion_control.entries_per_message[follower] || Consensus.maximum_entries_per_heartbeat()
+    num_entries = state.leader_state.congestion_control.entries_per_message[follower] || @starting_num_entries
     num_entries = max(div(num_entries, 2), 1)
 
     if num_entries(state, follower) > num_entries do
@@ -26,7 +28,8 @@ defmodule Craft.Consensus.State.LeaderState.CongestionControl do
 
   def follower_ok(%State{} = state, follower) do
     max = Consensus.maximum_entries_per_heartbeat()
-    num_entries = state.leader_state.congestion_control.entries_per_message[follower] || max
+
+    num_entries = state.leader_state.congestion_control.entries_per_message[follower] || @starting_num_entries
     step = div(max, 10)
     num_entries = min(num_entries + step, max)
 

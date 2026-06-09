@@ -13,7 +13,7 @@ config :logger, :default_formatter,
 
 config :craft, :snapshot_server_port, 1337
 
-# naive congestion control
+# congestion control
 config :craft, :maximum_entries_per_heartbeat, 10_000
 
 # max log length before a compaction snapshot is triggered
@@ -23,10 +23,10 @@ heartbeat_interval = 30 # ms
 config :craft, :heartbeat_interval, heartbeat_interval
 
 # max time in the past within which leader must have a successful quorum, or it'll step down
-config :craft, :checkquorum_interval, heartbeat_interval * 10
+config :craft, :checkquorum_interval, 5_000
 
 # duration a follower will wait for a heartbeat before becoming "lonely", and starting an election
-lonely_timeout = heartbeat_interval * 10
+lonely_timeout = 5_000
 config :craft, :lonely_timeout, lonely_timeout
 
 # setting the leader lease length to something a bit less than the lonely timeout ensures that the new leader
