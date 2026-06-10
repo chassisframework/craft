@@ -26,7 +26,7 @@ config :craft, :heartbeat_interval, heartbeat_interval
 config :craft, :checkquorum_interval, 5_000
 
 # duration a follower will wait for a heartbeat before becoming "lonely", and starting an election
-lonely_timeout = 5_000
+lonely_timeout = 10_000
 config :craft, :lonely_timeout, lonely_timeout
 
 # setting the leader lease length to something a bit less than the lonely timeout ensures that the new leader

@@ -182,7 +182,7 @@ defmodule CraftTest do
     assert_receive ^message
   end
 
-  nexus_test "backup/2 + purge/1 + restore/1 roundtrip", %{name: name, nodes: nodes, nexus: nexus} do
+  nexus_test "backup/2 + purge/1 + restore/1 roundtrip", %{name: name, nodes: nodes, nexus: nexus, leader_leases: leases} do
     wait_until(nexus, {Stability, :all})
 
     ref = make_ref()
@@ -199,6 +199,10 @@ defmodule CraftTest do
     :ok = :rpc.call(backup_node, Craft, :backup, [name, backup_dir])
 
     :ok = Craft.stop_group(name)
+
+    if leases do
+      Process.sleep(5_000)
+    end
 
     for node <- nodes do
       assert is_list(:rpc.call(node, Craft, :purge, [name]))

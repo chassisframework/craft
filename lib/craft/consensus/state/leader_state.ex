@@ -161,6 +161,9 @@ defmodule Craft.Consensus.State.LeaderState do
 
       {false, _} ->
         :noop
+
+      false ->
+        :noop
     end
 
     state

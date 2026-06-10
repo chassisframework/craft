@@ -573,7 +573,7 @@ defmodule Craft.Consensus do
               %{term: incoming_last_entry_term} = List.last(append_entries.entries)
 
               case Persistence.fetch(data.persistence, incoming_last_entry_index) do
-                %{term: ^incoming_last_entry_term} ->
+                {:ok, %{term: ^incoming_last_entry_term}} ->
                   # we've already appended these entries, it's probably an in-flight retry
                   %{data | persistence: Persistence.commit_buffer(data.persistence)}
 
@@ -1113,18 +1113,10 @@ defmodule Craft.Consensus do
   end
 
   def leader({:call, from}, {:command, command}, %State{global_clock: global_clock} = data) when not is_nil(global_clock) do
-    case GlobalTimestamp.time_until_lease_expires(data.global_clock, data.lease_expires_at) do
-      {:ok, time} ->
-        if time > 0 do
-          handle_command(command, from, data)
-        else
-          {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
-        end
-
-      error ->
-        Logger.error("unable to determine global time for command, got #{inspect error}, becoming follower", logger_metadata(data, trace: :global_clock_failure))
-
-        {:next_state, :lonely, data, [{:reply, from, {:error, :not_leaseholder}}]}
+    if MemberCache.holding_lease?(data.name) do
+      handle_command(command, from, data)
+    else
+      {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
     end
   end
 
@@ -1186,9 +1178,9 @@ defmodule Craft.Consensus do
         if state.global_clock do
           case GlobalTimestamp.now(state.global_clock) do
             {:ok, now} ->
-              # if we're within ten heartbeats of lease expiration, bump the lease
+              # if we're within half of the lease expiration window, bump the lease
               # we don't bump the lease with every heartbeat as it costs latency to write the new lease to disk
-              if !state.lease_expires_at or DateTime.diff(state.lease_expires_at.earliest, now.latest, :millisecond) / heartbeat_interval() < 10 do
+              if !state.lease_expires_at or DateTime.diff(state.lease_expires_at.earliest, now.latest, :millisecond) < leader_lease_period() / 2 do
                 %{state | lease_expires_at: GlobalTimestamp.add(now, leader_lease_period(), :millisecond)}
                 |> Metadata.buffer_put()
               else
