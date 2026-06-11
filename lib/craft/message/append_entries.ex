@@ -13,7 +13,8 @@ defmodule Craft.Message.AppendEntries do
     :entries,
     :leader_last_applied,
     :leadership_transfer,
-    :sent_at,
+    :sent_at, # leader's clock, round id and lag calculations
+    :arrived_at, # follower's clock, to calculate processing time
     :lease_expires_at
   ]
 
@@ -70,6 +71,10 @@ defmodule Craft.Message.AppendEntries do
     }
   end
 
+  def set_arrived_at(%__MODULE__{} = results) do
+    %{results | arrived_at: :erlang.monotonic_time(:millisecond)}
+  end
+
   defmodule Results do
     alias Craft.Message.AppendEntries
 
@@ -80,8 +85,14 @@ defmodule Craft.Message.AppendEntries do
       :latest_index,
       :conflict_index,
       :conflict_term,
-      :heartbeat_sent_at
+      :heartbeat_sent_at, # leader's clock, round id
+      :arrived_at, # leader's clock, used to calculate lag, see Consenus.do_operation/4
+      :processing_time
     ]
+
+    def set_processing_time(results, append_entries) do
+      %{results | processing_time: :erlang.monotonic_time(:millisecond) - append_entries.arrived_at}
+    end
 
     def new(state, append_entries, success, _entry \\ nil)
     def new(%State{state: :follower} = state, %AppendEntries{} = append_entries, _success = true, _entry) do
@@ -92,6 +103,7 @@ defmodule Craft.Message.AppendEntries do
         latest_index: Persistence.latest_index(state.persistence),
         heartbeat_sent_at: append_entries.sent_at
       }
+      |> set_processing_time(append_entries)
     end
 
     # we don't have an entry at the leader's index, send the latest index
@@ -103,6 +115,7 @@ defmodule Craft.Message.AppendEntries do
         latest_index: Persistence.latest_index(state.persistence),
         heartbeat_sent_at: append_entries.sent_at
       }
+      |> set_processing_time(append_entries)
     end
 
     # we have the index, but it doesn't match the leader's term
@@ -115,6 +128,11 @@ defmodule Craft.Message.AppendEntries do
         conflict_index: earliest_index_of_term(state.persistence, entry.term, append_entries.prev_log_index),
         heartbeat_sent_at: append_entries.sent_at
       }
+      |> set_processing_time(append_entries)
+    end
+
+    def set_arrived_at(%__MODULE__{} = results) do
+      %{results | arrived_at: :erlang.monotonic_time(:millisecond)}
     end
 
     defp earliest_index_of_term(persistence, term, starting_index) do

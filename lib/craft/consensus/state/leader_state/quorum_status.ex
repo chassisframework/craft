@@ -90,7 +90,6 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
 
   # {should_handle?, {round_is_most_recent_and_just_succeeded? = true, lease_expires_at} | false, follower_lagging?, state}
   def heartbeat_response_received(%State{} = state, %AppendEntries.Results{} = results) do
-    received_at = :erlang.monotonic_time(:millisecond)
     quorum_status = state.leader_state.quorum_status
     # -1 since we're the leader
     num_replies_needed = State.quorum_needed(state) - 1
@@ -115,15 +114,16 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
           {:halt, {false, false, false, quorum_status}}
         else
           if round.round_sent_at == results.heartbeat_sent_at do
-            heartbeats = Map.put(round.heartbeats, results.from, {results.heartbeat_sent_at, received_at})
+            heartbeats = Map.put(round.heartbeats, results.from, {results.heartbeat_sent_at, results.arrived_at})
             round_successful? = Enum.count(heartbeats) >= num_replies_needed
             round_is_most_recent_and_just_succeeded? = round_successful? and (!quorum_status.latest_successful_round_sent_at ||  round.round_sent_at > quorum_status.latest_successful_round_sent_at)
             follower_lagging? = round.round_sent_at != quorum_status.current_round_sent_at
 
             if follower_lagging? do
-              lag = received_at - round.round_sent_at - Consensus.heartbeat_interval()
+              lag = results.arrived_at - round.round_sent_at - Consensus.heartbeat_interval()
+              rpc_time = results.arrived_at - round.round_sent_at - results.processing_time
 
-              Logger.warning("heartbeat reply from lagging follower, lag=#{lag}ms: #{inspect results}.", logger_metadata(state))
+              Logger.warning("heartbeat reply from lagging follower, lag=#{lag}ms, processing_time=#{results.processing_time}ms, rpc_time=#{rpc_time}ms: #{inspect results}.", logger_metadata(state))
 
               telemetry([:craft, :heartbeat, :reply, :missed_deadline],
                         %{lag_ms: lag},
@@ -132,7 +132,7 @@ defmodule Craft.Consensus.State.LeaderState.QuorumStatus do
 
             quorum_status =
               if round_is_most_recent_and_just_succeeded? do
-                duration = received_at - round.round_sent_at
+                duration = results.arrived_at - round.round_sent_at
                 breathing_room = Consensus.heartbeat_interval() - duration
                 telemetry([:craft, :quorum, :succeeded],
                           %{duration_ms: duration, breathing_room_ms: breathing_room},

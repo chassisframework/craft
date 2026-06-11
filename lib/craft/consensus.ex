@@ -127,6 +127,8 @@ defmodule Craft.Consensus do
   def remote_operation(name, node, operation, msg) do
     :rpc.call(node, __MODULE__, :do_operation, [operation, name, msg])
   end
+  def do_operation(:cast, name, %AppendEntries{} = msg), do: :gen_statem.cast(via(name, __MODULE__), AppendEntries.set_arrived_at(msg))
+  def do_operation(:cast, name, %AppendEntries.Results{} = msg), do: :gen_statem.cast(via(name, __MODULE__), AppendEntries.Results.set_arrived_at(msg))
   def do_operation(:cast, name, msg), do: :gen_statem.cast(via(name, __MODULE__), msg)
   def do_operation(:call, name, msg), do: :gen_statem.call(via(name, __MODULE__), msg)
 
@@ -1205,34 +1207,6 @@ defmodule Craft.Consensus do
       state = LeaderState.QuorumStatus.start_new_round(state, empty_write_buffer?)
 
       state =
-        if LeaderState.QuorumStatus.idle?(state) do
-          if !state.notified_machine_of_idleness do
-
-            # snapshotting truncates the log, so we want to make sure that all followers are caught up first
-            # we don't want to delete a snapshot that's being downloaded, nor truncate the log before a follower
-            # that's just pulled a snapshot can catch up
-            voting_nodes_caught_up =
-              state.members
-              |> Members.other_voting_nodes()
-              |> Enum.all?(fn node ->
-                state.leader_state.match_indices[node] == Persistence.latest_index(state.persistence)
-              end)
-
-            all_followers_caught_up = Enum.empty?(state.members.catching_up_nodes) and voting_nodes_caught_up
-            log_too_long = Persistence.length(state.persistence) > maximum_log_length()
-            # log_too_big = Persistence.log_size() > 100mb or 100 entries, etc
-
-            Machine.notify_idle(state, all_followers_caught_up && log_too_long)
-
-            put_in(state.notified_machine_of_idleness, true)
-          else
-            state
-          end
-        else
-          put_in(state.notified_machine_of_idleness, false)
-        end
-
-      state =
         state.members
         |> Members.other_nodes()
         |> Enum.reduce(state, fn to_node, state ->
@@ -1258,7 +1232,32 @@ defmodule Craft.Consensus do
       end, ordered: false)
       |> Stream.run()
 
-      state
+      if LeaderState.QuorumStatus.idle?(state) do
+        if !state.notified_machine_of_idleness do
+
+          # snapshotting truncates the log, so we want to make sure that all followers are caught up first
+          # we don't want to delete a snapshot that's being downloaded, nor truncate the log before a follower
+          # that's just pulled a snapshot can catch up
+          voting_nodes_caught_up =
+            state.members
+            |> Members.other_voting_nodes()
+            |> Enum.all?(fn node ->
+              state.leader_state.match_indices[node] == Persistence.latest_index(state.persistence)
+            end)
+
+          all_followers_caught_up = Enum.empty?(state.members.catching_up_nodes) and voting_nodes_caught_up
+          log_too_long = Persistence.length(state.persistence) > maximum_log_length()
+          # log_too_big = Persistence.log_size() > 100mb or 100 entries, etc
+
+          Machine.notify_idle(state, all_followers_caught_up && log_too_long)
+
+          put_in(state.notified_machine_of_idleness, true)
+        else
+          state
+        end
+      else
+        put_in(state.notified_machine_of_idleness, false)
+      end
     end,
     [:craft, :quorum, :heartbeat],
     %{name: state.name})
