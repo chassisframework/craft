@@ -152,10 +152,12 @@ defmodule Craft.Consensus.State.LeaderState do
         Logger.debug("quorum reached", logger_metadata(state, trace: :quorum_reached))
 
         if state.lease_expires_at && !state.leader_state.waiting_for_lease do
-          {:ok, %Lease{expires_at: old_lease_expires_at}} = Leases.get(state.name)
+          case Leases.get(state.name) do
+            {:ok, %Lease{expires_at: ^lease_expires_at}} ->
+              :noop
 
-          if old_lease_expires_at != lease_expires_at do
-            Leases.update(state, lease_expires_at)
+            _ ->
+              Leases.update(state, lease_expires_at)
           end
         end
 

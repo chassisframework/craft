@@ -945,8 +945,6 @@ defmodule Craft.Consensus do
 
         data = put_in(data.leader_state.waiting_for_lease, false)
 
-        Leases.update(data, data.lease_expires_at)
-
         Machine.lease_taken(data)
 
         {:keep_state, data, actions}
@@ -986,8 +984,6 @@ defmodule Craft.Consensus do
           Logger.info("taking over lease", logger_metadata(data, trace: :lease_takeover))
 
           data = put_in(data.leader_state.waiting_for_lease, false)
-
-          Leases.update(data, data.lease_expires_at)
 
           Machine.lease_taken(data)
 
