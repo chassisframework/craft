@@ -3,6 +3,7 @@ defmodule Craft.Raft do
 
   alias Craft.Consensus
   alias Craft.Configuration
+  alias Craft.Leases
   alias Craft.Machine
   alias Craft.MemberCache
   alias Craft.MemberCache.GroupStatus
@@ -177,7 +178,7 @@ defmodule Craft.Raft do
 
   defdelegate stop_member(name), to: Craft.MemberSupervisor
   defdelegate discover(name, nodes), to: MemberCache
-  defdelegate holding_lease?(name), to: MemberCache
+  defdelegate holding_lease?(name), to: Leases
   defdelegate leader_ready?(name), to: MemberCache
   defdelegate holding_lease?(), to: Machine
   defdelegate known_groups(), to: MemberCache, as: :all

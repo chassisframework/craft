@@ -5,6 +5,7 @@ defmodule Craft.Machine do
   alias Craft.Configuration
   alias Craft.Consensus
   alias Craft.Consensus.State, as: ConsensusState
+  alias Craft.Leases
   alias Craft.Log.CommandEntry
   alias Craft.Log.MembershipEntry
   alias Craft.Log.SnapshotEntry
@@ -483,7 +484,7 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
-    if MemberCache.holding_lease?(state.name) do
+    if Leases.holding_lease?(state.name) do
       # write-optimized machine has unapplied commands
       state = apply_outstanding_entries(state)
 
@@ -784,7 +785,7 @@ defmodule Craft.Machine do
   end
 
   def handle_call(:get_last_applied_index, _from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
-    if MemberCache.holding_lease?(state.name) do
+    if Leases.holding_lease?(state.name) do
       # follower is about to service a read-index query, which is an externally visible event covered by consistency guarantees,
       # so we need to fast-forward the log if we're in write-optimized mode with unapplied commits, just as if it was serviced locally
       state = apply_outstanding_entries(state)
@@ -898,14 +899,17 @@ defmodule Craft.Machine do
   defp apply_outstanding_entries(state), do: apply_outstanding_entries(state, Consensus.get_log(state.name))
   defp apply_outstanding_entries(state, log) do
     range = state.last_applied+1..state.apply_up_to//1
-    entries = Persistence.fetch_between(log, range)
+    if Range.size(range) > 0 do
+      entries = Persistence.fetch_between(log, range)
 
-    entries_with_index = Enum.zip(range, entries)
+      entries_with_index = Enum.zip(range, entries)
 
-    apply_entries(state, entries_with_index)
+      apply_entries(state, entries_with_index)
+    else
+      state
+    end
   end
 
-  defp apply_entries(state, []), do: state
   defp apply_entries(state, entries) do
     entries_by_type = Enum.group_by(entries, fn {_index, entry} -> entry.__struct__ end)
 
@@ -1015,7 +1019,7 @@ defmodule Craft.Machine do
         unapplied_entries_with_index = Enum.zip(range, unapplied_entries)
         state = apply_entries(state, unapplied_entries_with_index)
 
-        Logger.debug("idle, applying chunk of #{Enum.count(unapplied_entries)} outstanding commands (#{inspect range})", logger_metadata(trace: {:idle, :applying_commands, Enum.count(unapplied_entries)}))
+        Logger.info("idle, applying chunk of #{Enum.count(unapplied_entries)} outstanding commands (#{inspect range})", logger_metadata(trace: {:idle, :applying_commands, Enum.count(unapplied_entries)}))
 
         GenServer.cast(self(), :maybe_do_idle_work)
 

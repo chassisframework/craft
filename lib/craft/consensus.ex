@@ -23,6 +23,7 @@ defmodule Craft.Consensus do
   alias Craft.Consensus.State.LeaderState.MembershipChange
   alias Craft.Consensus.State.Members
   alias Craft.GlobalTimestamp
+  alias Craft.Leases
   alias Craft.Log.CommandEntry
   alias Craft.Log.MembershipEntry
   alias Craft.Machine
@@ -942,7 +943,7 @@ defmodule Craft.Consensus do
 
         data = put_in(data.leader_state.waiting_for_lease, false)
 
-        MemberCache.update_lease_holder(data, data.lease_expires_at)
+        Leases.update(data, data.lease_expires_at)
 
         Machine.lease_taken(data)
 
@@ -984,7 +985,7 @@ defmodule Craft.Consensus do
 
           data = put_in(data.leader_state.waiting_for_lease, false)
 
-          MemberCache.update_lease_holder(data, data.lease_expires_at)
+          Leases.update(data, data.lease_expires_at)
 
           Machine.lease_taken(data)
 
@@ -1113,9 +1114,10 @@ defmodule Craft.Consensus do
   end
 
   def leader({:call, from}, {:command, command}, %State{global_clock: global_clock} = data) when not is_nil(global_clock) do
-    if MemberCache.holding_lease?(data.name) do
+    if Leases.holding_lease?(data.name) do
       handle_command(command, from, data)
     else
+      IO.inspect Leases.get(data.name)
       {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
     end
   end

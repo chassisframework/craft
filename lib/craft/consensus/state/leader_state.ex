@@ -3,10 +3,11 @@ defmodule Craft.Consensus.State.LeaderState do
   alias Craft.Consensus.State.LeaderState.QuorumStatus
   alias Craft.Consensus.State.LeaderState.CongestionControl
   alias Craft.Consensus.State.Members
+  alias Craft.Leases
+  alias Craft.Leases.Lease
   alias Craft.Log.MembershipEntry
   alias Craft.Machine
   alias Craft.MemberCache
-  alias Craft.MemberCache.GroupStatus
   alias Craft.Persistence
   alias Craft.Message.AppendEntries
   alias Craft.Message.InstallSnapshot
@@ -151,9 +152,10 @@ defmodule Craft.Consensus.State.LeaderState do
         Logger.debug("quorum reached", logger_metadata(state, trace: :quorum_reached))
 
         if state.lease_expires_at && !state.leader_state.waiting_for_lease do
-          {:ok, %GroupStatus{lease_holder: {_, _, old_lease_expires_at}}} = MemberCache.get(state.name)
+          {:ok, %Lease{expires_at: old_lease_expires_at}} = Leases.get(state.name)
+
           if old_lease_expires_at != lease_expires_at do
-            MemberCache.update_lease_holder(state, lease_expires_at)
+            Leases.update(state, lease_expires_at)
           end
         end
 

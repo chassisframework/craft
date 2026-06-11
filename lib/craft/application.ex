@@ -8,6 +8,8 @@ defmodule Craft.Application do
     silence_sasl_logger()
     set_nexus_logger()
 
+    Craft.Leases.create_table()
+
     children = [
       Craft.SnapshotServer,
       {Task.Supervisor, name: Craft.SnapshotServer.Supervisor},
