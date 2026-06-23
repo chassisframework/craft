@@ -39,7 +39,7 @@ defmodule Craft.MixProject do
 
   defp deps do
     [
-      {:rocksdb, "~> 2.5.0"},
+      {:rocksdb, github: "chassisframework/erlang-rocksdb", branch: "get_keys-get_keys_in_prefix"},
       {:telemetry, "~> 1.0"},
       {:ex_doc, "~> 0.40.1", only: [:dev]},
       # {:hertz, path: "/Users/mikes/repos/hertz", only: :dev}
