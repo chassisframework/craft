@@ -48,14 +48,7 @@ defmodule Craft.Consensus.State do
             _ -> false
           end)
 
-        # fall back to the nodes that the cluster was originally initialized with, the leader should contact us soon.
-        if entry do
-          entry.members
-        else
-          %{nodes: nodes} = Configuration.find(name)
-
-          Members.new(nodes)
-        end
+        entry.members
       end
 
     %__MODULE__{
