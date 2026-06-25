@@ -256,6 +256,8 @@ defmodule Craft.Machine do
         state.private
       end
 
+    assert_not_nil!(private)
+
     waiting_for_first_commit =
       if new_role == :leader do
         Logger.debug("waiting for index #{await_commit_index}", logger_metadata(trace: :waiting))
@@ -371,6 +373,8 @@ defmodule Craft.Machine do
                 state.private
               end
 
+            assert_not_nil!(private)
+
             MemberCache.set_leader_ready(state.name, true)
 
             %{state | waiting_for_first_commit: false, private: private}
@@ -392,6 +396,8 @@ defmodule Craft.Machine do
       else
         state.private
       end
+
+    assert_not_nil!(private)
 
     {:noreply, %{state | private: private}}
   end
@@ -425,6 +431,8 @@ defmodule Craft.Machine do
 
         state.private
       end
+
+    assert_not_nil!(private)
 
     {:noreply, %{state | private: private}}
   end
@@ -691,6 +699,7 @@ defmodule Craft.Machine do
         File.mkdir_p!(snapshots_dir)
 
         {:ok, private} = state.module.init(%{name: state.name, data_dir: machine_data_dir})
+        assert_not_nil!(private)
         last_applied = state.module.last_applied_log_index(private)
 
         state = %{state | snapshots_dir: snapshots_dir, last_applied: last_applied, private: private}
@@ -714,6 +723,7 @@ defmodule Craft.Machine do
 
           _ ->
             {:ok, private} = state.module.init(state.name)
+            assert_not_nil!(private)
 
             {%{state | last_applied: 0, private: private}, nil}
         end
@@ -744,6 +754,7 @@ defmodule Craft.Machine do
     Logger.debug("preparing to receive snapshot", logger_metadata(trace: :preparing_to_receive_snapshot))
 
     {:ok, private} = state.module.prepare_to_receive_snapshot(state.private)
+    assert_not_nil!(private)
 
     {:reply, :ok, %{state | private: private}}
   end
@@ -763,6 +774,7 @@ defmodule Craft.Machine do
 
         {private, last_applied}
       end
+    assert_not_nil!(private)
 
     state = %{state | private: private, apply_up_to: last_applied} |> update_last_applied(last_applied)
 
@@ -934,6 +946,8 @@ defmodule Craft.Machine do
             %{},
             %{num: Enum.count(commands_with_indexes)})
 
+          assert_not_nil!(private)
+
           state = %{state | private: private}
 
           # if the machine is write-optimized, we've already replied
@@ -969,6 +983,7 @@ defmodule Craft.Machine do
               [:craft, :machine, :user, :handle_command],
               %{})
 
+            assert_not_nil!(private)
 
             state = %{state | private: private}
 
@@ -1104,4 +1119,7 @@ defmodule Craft.Machine do
       def __craft_mutable__(), do: unquote(mutable)
     end
   end
+
+  defp assert_not_nil!(nil), do: raise "private is nil"
+  defp assert_not_nil!(_), do: :noop
 end

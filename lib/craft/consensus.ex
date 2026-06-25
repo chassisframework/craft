@@ -1115,7 +1115,6 @@ defmodule Craft.Consensus do
     if Leases.holding_lease?(data.name) do
       handle_command(command, from, data)
     else
-      IO.inspect Leases.get(data.name)
       {:keep_state_and_data, [{:reply, from, {:error, :not_leaseholder}}]}
     end
   end
