@@ -96,10 +96,6 @@ defmodule Craft.Consensus do
     do_operation(:call, name, {:backup, to_directory})
   end
 
-  def get_log(name) do
-    do_operation(:call, name, :get_log)
-  end
-
   def set_last_applied(name, index) do
     do_operation(:cast, name, {:set_last_applied, index})
   end
@@ -150,22 +146,7 @@ defmodule Craft.Consensus do
       :logger.update_process_metadata(%{gl: remote_group_leader})
     end
 
-    data = State.new(args.name, args[:nodes], args.persistence, args.machine, args[:global_clock], args[:nexus_pid])
-
-    me = self()
-    # avoids passing `state` into the cleaner-upper process
-    persistence = data.persistence
-    spawn_link(fn ->
-      Process.flag(:trap_exit, true)
-
-      receive do
-        {:EXIT, ^me, _reason} ->
-          Persistence.close(persistence)
-
-        msg ->
-          Logger.warning("consensus cleaner-upper ignored an unknown message: #{inspect msg}")
-      end
-    end)
+    data = State.new(args.name, args[:nodes], args.machine, args[:global_clock], args[:nexus_pid])
 
     if args[:manual_start] do
       {:ok, :waiting_to_start, data}
@@ -177,7 +158,7 @@ defmodule Craft.Consensus do
   defp continue_init(data) do
     MemberCache.non_leader_update(data)
 
-    {:ok, snapshot, last_applied} = Machine.init_or_restore(data)
+    {snapshot, last_applied} = Machine.snapshot_info_and_last_applied(data.name)
 
     if data.global_clock do
       Logger.info("consensus process started, global clock present, leader leases enabled", logger_metadata(data))
@@ -339,10 +320,6 @@ defmodule Craft.Consensus do
     backup(to_directory, from, data)
   end
 
-  def lonely({:call, from}, :get_log, data) do
-    get_log(from, data)
-  end
-
   def lonely({:call, from}, _request, data) do
     {:keep_state_and_data, [{:reply, from, not_leader_response(data)}]}
   end
@@ -488,10 +465,6 @@ defmodule Craft.Consensus do
 
   def receiving_snapshot({:call, from}, {:backup, _to_directory}, _data) do
     {:keep_state_and_data, [{:reply, from, {:error, :receiving_snapshot}}]}
-  end
-
-  def receiving_snapshot({:call, from}, :get_log, data) do
-    get_log(from, data)
   end
 
   def receiving_snapshot({:call, from}, _request, data) do
@@ -719,10 +692,6 @@ defmodule Craft.Consensus do
     backup(to_directory, from, data)
   end
 
-  def follower({:call, from}, :get_log, data) do
-    get_log(from, data)
-  end
-
   def follower({:call, from}, _request, data) do
     {:keep_state_and_data, [{:reply, from, not_leader_response(data)}]}
   end
@@ -868,10 +837,6 @@ defmodule Craft.Consensus do
 
   def candidate({:call, from}, {:backup, to_directory}, data) do
     backup(to_directory, from, data)
-  end
-
-  def candidate({:call, from}, :get_log, data) do
-    get_log(from, data)
   end
 
   def candidate({:call, from}, _request, data) do
@@ -1133,10 +1098,6 @@ defmodule Craft.Consensus do
     backup(to_directory, from, data)
   end
 
-  def leader({:call, from}, :get_log, data) do
-    get_log(from, data)
-  end
-
   def leader({:call, from}, _msg, %State{leader_state: %LeaderState{leadership_transfer: %LeadershipTransfer{} = leadership_transfer}}) do
     {:keep_state_and_data, [{:reply, from, {:error, {:leadership_transfer_in_progress, leadership_transfer.current_candidate}}}]}
   end
@@ -1316,9 +1277,5 @@ defmodule Craft.Consensus do
       end
 
     {:keep_state_and_data, [{:reply, from, result}]}
-  end
-
-  defp get_log(from, data) do
-    {:keep_state_and_data, [{:reply, from, data.persistence}]}
   end
 end

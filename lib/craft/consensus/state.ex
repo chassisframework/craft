@@ -33,22 +33,27 @@ defmodule Craft.Consensus.State do
     :nexus_pid
   ]
 
-  def new(name, nodes, persistence, machine, global_clock, nexus_pid \\ nil) do
-    persistence = Persistence.new(name, persistence)
+  def new(name, nodes, machine, global_clock, nexus_pid \\ nil) do
+    persistence = Craft.Log.handle(name)
 
     # if we're restoring state from disk, search the log backwards for group members
-    members =
-      if nodes do
-        Members.new(nodes)
-      else
-        entry =
-          Persistence.reverse_find(persistence, fn
-            %MembershipEntry{} -> true
-            %SnapshotEntry{} -> true
-            _ -> false
-          end)
+    entry =
+      Persistence.reverse_find(persistence, fn
+        %MembershipEntry{} ->
+          true
 
+        %SnapshotEntry{} ->
+          true
+
+        _ ->
+          false
+      end)
+
+    members =
+      if entry do
         entry.members
+      else
+        Members.new(nodes)
       end
 
     %__MODULE__{

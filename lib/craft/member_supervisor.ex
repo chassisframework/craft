@@ -15,6 +15,7 @@ defmodule Craft.MemberSupervisor do
   @impl Supervisor
   def init(args) do
     children = [
+      {Craft.Log, args},
       {Craft.Machine, args},
       {Craft.Consensus, args}
     ]

@@ -61,6 +61,7 @@ defmodule Craft.Machine do
       :name,
       :module,
       :private,
+      :persistence,
       :snapshots_dir,
       :role,
       :global_clock,
@@ -102,10 +103,10 @@ defmodule Craft.Machine do
     GenServer.start_link(__MODULE__, args, name: via(args.name, __MODULE__))
   end
 
-  def init_or_restore(%ConsensusState{} = state) do
-    state.name
+  def snapshot_info_and_last_applied(name) do
+    name
     |> lookup(__MODULE__)
-    |> GenServer.call({:init_or_restore, state.persistence})
+    |> GenServer.call(:snapshot_info_and_last_applied)
   end
 
   def update_role(%ConsensusState{} = state, await_commit_index \\ nil) do
@@ -180,7 +181,7 @@ defmodule Craft.Machine do
 
     state.name
     |> lookup(__MODULE__)
-    |> GenServer.cast({:quorum_reached, apply_up_to, state.persistence, last_quorum_at})
+    |> GenServer.cast({:quorum_reached, apply_up_to, last_quorum_at})
   end
 
   def call(name, node, request, timeout) do
@@ -220,7 +221,77 @@ defmodule Craft.Machine do
 
     Process.put(:__craft_meta__, %{group_name: args.name, global_clock: args[:global_clock]})
 
-    {:ok, %State{name: args.name, module: args.machine, global_clock: args[:global_clock]}}
+    persistence = Craft.Log.handle(args.name)
+
+    {:ok, %State{name: args.name, module: args.machine, persistence: persistence, global_clock: args[:global_clock]}, {:continue, :init_or_restore}}
+  end
+
+  @impl true
+  def handle_continue(:init_or_restore, state) do
+    state =
+      if state.module.__craft_mutable__() do
+        data_dir =
+          state.name
+          |> Configuration.find()
+          |> Map.fetch!(:data_dir)
+
+        machine_data_dir = Path.join([Configuration.data_dir(), data_dir, "machine"])
+        snapshots_dir = Path.join([Configuration.data_dir(), data_dir, "snapshots"])
+
+        File.mkdir_p!(machine_data_dir)
+        File.mkdir_p!(snapshots_dir)
+
+        {:ok, private} = state.module.init(%{name: state.name, data_dir: machine_data_dir})
+        assert_not_nil!(private)
+        last_applied = state.module.last_applied_log_index(private)
+
+        with {index, %SnapshotEntry{}} <- Persistence.first(state.persistence) do
+          (File.ls!(snapshots_dir) -- [to_string(index)])
+          |> Enum.each(fn old_snapshot ->
+            state.snapshots_dir
+            |> Path.join(old_snapshot)
+            |> File.rm_rf()
+          end)
+        end
+
+        %{state | snapshots_dir: snapshots_dir, last_applied: last_applied, private: private}
+      else
+        case Persistence.first(state.persistence) do
+          {index, %SnapshotEntry{} = snapshot} ->
+            %{state | last_applied: index, private: snapshot.machine_private}
+
+          _ ->
+            {:ok, private} = state.module.init(state.name)
+            assert_not_nil!(private)
+
+            %{state | last_applied: 0, private: private}
+        end
+      end
+
+    me = self()
+    # avoids passing `state` into the cleaner-upper process
+    module = state.module
+    private = state.private
+    spawn_link(fn ->
+      Process.flag(:trap_exit, true)
+
+      receive do
+        {:EXIT, ^me, _reason} -> 
+          if function_exported?(module, :close, 1) do
+            module.close(private)
+          end
+
+        msg ->
+          Logger.warning("machine cleaner-upper ignored an unknown message: #{inspect msg}")
+      end
+    end)
+
+    {:noreply, %{state | apply_up_to: state.last_applied}}
+  end
+
+  @impl true
+  def handle_continue(:take_snapshot, state) do
+    {:noreply, do_snapshot(state)}
   end
 
   @impl true
@@ -280,7 +351,7 @@ defmodule Craft.Machine do
   end
 
   @impl true
-  def handle_cast({:quorum_reached, apply_up_to, log, last_quorum_at}, state) do
+  def handle_cast({:quorum_reached, apply_up_to, last_quorum_at}, state) do
     Logger.debug(fn ->
       metadata = %{}
       metadata = if apply_up_to > state.last_applied, do: Map.put(metadata, :new_apply_up_to, apply_up_to), else: metadata
@@ -291,7 +362,7 @@ defmodule Craft.Machine do
     range_since_last_update = state.apply_up_to+1..apply_up_to//1
     entries_since_last_update =
       if Range.size(range_since_last_update) > 0 do
-        Persistence.fetch_between(log, range_since_last_update)
+        Persistence.fetch_between(state.persistence, range_since_last_update)
       else
         []
       end
@@ -313,13 +384,13 @@ defmodule Craft.Machine do
           reply_to_command(state, index, :ok)
         end)
       else
-        apply_outstanding_entries(state, log)
+        apply_outstanding_entries(state)
       end
 
     state =
       if read_index_queries_to_execute != [] do
         # in write-optimized mode, we've already responded to the current batch, but we need to apply everything for follower reads
-        state = apply_outstanding_entries(state, log)
+        state = apply_outstanding_entries(state)
 
         # answer follower read-index queries
         for {from, query} <- read_index_queries_to_execute do
@@ -667,9 +738,7 @@ defmodule Craft.Machine do
 
   def handle_call({:command_status, request_id}, _from, state) do
     status =
-      state.name
-      |> Consensus.get_log()
-      |> Persistence.reduce_while(:unknown, fn
+      Persistence.reduce_while(state.persistence, :unknown, fn
         {index, %CommandEntry{request_id: ^request_id}}, _acc ->
           if index <= state.apply_up_to do
             {:halt, :committed}
@@ -679,74 +748,22 @@ defmodule Craft.Machine do
 
         _, acc ->
           {:cont, acc}
-    end)
+      end)
 
     {:reply, status, state}
   end
 
-  def handle_call({:init_or_restore, log}, _from, state) do
-    {state, snapshot} =
-      if state.module.__craft_mutable__() do
-        data_dir =
-          state.name
-          |> Configuration.find()
-          |> Map.fetch!(:data_dir)
-
-        machine_data_dir = Path.join([Configuration.data_dir(), data_dir, "machine"])
-        snapshots_dir = Path.join([Configuration.data_dir(), data_dir, "snapshots"])
-
-        File.mkdir_p!(machine_data_dir)
-        File.mkdir_p!(snapshots_dir)
-
-        {:ok, private} = state.module.init(%{name: state.name, data_dir: machine_data_dir})
-        assert_not_nil!(private)
-        last_applied = state.module.last_applied_log_index(private)
-
-        state = %{state | snapshots_dir: snapshots_dir, last_applied: last_applied, private: private}
-
-        snapshot =
-          with {index, %SnapshotEntry{}} <- Persistence.first(log) do
-            (File.ls!(snapshots_dir) -- [to_string(index)])
-            |> Enum.each(fn old_snapshot ->
-              Path.join(snapshots_dir, old_snapshot)
-              |> File.rm_rf()
-            end)
-
-            {index, snapshot_info(index, state)}
-          end
-
-        {state, snapshot}
+  def handle_call(:snapshot_info_and_last_applied, _from, state) do
+    snapshot =
+      with true <- state.module.__craft_mutable__(),
+           {index, %SnapshotEntry{}} <- Persistence.first(state.persistence) do
+        {index, snapshot_info(index, state)}
       else
-        case Persistence.first(log) do
-          {index, %SnapshotEntry{} = snapshot} ->
-            {%{state | last_applied: index, private: snapshot.machine_private}, nil}
-
-          _ ->
-            {:ok, private} = state.module.init(state.name)
-            assert_not_nil!(private)
-
-            {%{state | last_applied: 0, private: private}, nil}
-        end
+        _ ->
+          nil
       end
 
-    me = self()
-    # avoids passing `state` into the cleaner-upper process
-    module = state.module
-    spawn_link(fn ->
-      Process.flag(:trap_exit, true)
-
-      receive do
-        {:EXIT, ^me, _reason} -> 
-          if function_exported?(module, :close, 1) do
-            module.close(state.private)
-          end
-
-        msg ->
-          Logger.warning("machine cleaner-upper ignored an unknown message: #{inspect msg}")
-      end
-    end)
-
-    {:reply, {:ok, snapshot, state.last_applied}, %{state | apply_up_to: state.last_applied}}
+    {:reply, {snapshot, state.last_applied}, state}
   end
 
   # delete on-disk machine files etc...
@@ -903,16 +920,10 @@ defmodule Craft.Machine do
     {:noreply, %{state | read_index_tasks: Map.delete(state.read_index_tasks, ref)}}
   end
 
-  @impl true
-  def handle_continue(:take_snapshot, state) do
-    {:noreply, do_snapshot(state)}
-  end
-
-  defp apply_outstanding_entries(state), do: apply_outstanding_entries(state, Consensus.get_log(state.name))
-  defp apply_outstanding_entries(state, log) do
+  defp apply_outstanding_entries(state) do
     range = state.last_applied+1..state.apply_up_to//1
     if Range.size(range) > 0 do
-      entries = Persistence.fetch_between(log, range)
+      entries = Persistence.fetch_between(state.persistence, range)
 
       entries_with_index = Enum.zip(range, entries)
 
@@ -1023,14 +1034,12 @@ defmodule Craft.Machine do
   end
 
   defp do_idle_work(%State{mode: :write_optimized} = state) do
-    log = Consensus.get_log(state.name)
-
     range_end = min(state.apply_up_to, state.last_applied + Consensus.maximum_entries_per_heartbeat())
     range = state.last_applied+1..range_end//1
 
     cond do
       Range.size(range) > 0 ->
-        unapplied_entries = Persistence.fetch_between(log, range)
+        unapplied_entries = Persistence.fetch_between(state.persistence, range)
         unapplied_entries_with_index = Enum.zip(range, unapplied_entries)
         state = apply_entries(state, unapplied_entries_with_index)
 
