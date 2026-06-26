@@ -564,49 +564,61 @@ defmodule Craft.Machine do
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
     if Leases.holding_lease?(state.name) do
-      # write-optimized machine has unapplied commands
-      state = apply_outstanding_entries(state)
+      if dead_local_process?(from) do
+        Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
-      Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+        {:noreply, state}
+      else
+        # write-optimized machine has unapplied commands
+        state = apply_outstanding_entries(state)
 
-      time(fn ->
-        case state.module.handle_query(query, {:direct, from}, state.private) do
-          {:reply, reply} ->
-            {:reply, reply, state}
+        Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
-          :noreply ->
-            {:noreply, state}
-        end
-      end,
-      [:craft, :machine, :user, :handle_query],
-      %{lease_read: true, linearizable: true})
+        time(fn ->
+          case state.module.handle_query(query, {:direct, from}, state.private) do
+            {:reply, reply} ->
+              {:reply, reply, state}
+
+            :noreply ->
+              {:noreply, state}
+          end
+        end,
+        [:craft, :machine, :user, :handle_query],
+        %{lease_read: true, linearizable: true})
+      end
     else
       {:reply, {:error, :not_leaseholder}, state}
     end
   end
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader} = state) do
-    # write-optimized machine has unapplied commands
-    state = apply_outstanding_entries(state)
+    if dead_local_process?(from) do
+      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
-    Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :quorum_read, from, query}))
+      {:noreply, state}
+    else
+      # write-optimized machine has unapplied commands
+      state = apply_outstanding_entries(state)
 
-    query_time = :erlang.monotonic_time(:millisecond)
+      Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :quorum_read, from, query}))
 
-    state =
-      time(fn ->
-        case state.module.handle_query(query, {:quorum, query_time, self(), from}, state.private) do
-          {:reply, reply} ->
-            %{state | client_query_results: :gb_trees.enter(query_time, {from, reply}, state.client_query_results)}
+      query_time = :erlang.monotonic_time(:millisecond)
 
-          :noreply ->
-            %{state | pending_parallel_queries: MapSet.put(state.pending_parallel_queries, from)}
-        end
-      end,
-      [:craft, :machine, :user, :handle_query],
-      %{quorum_read: true, linearizable: true})
+      state =
+        time(fn ->
+          case state.module.handle_query(query, {:quorum, query_time, self(), from}, state.private) do
+            {:reply, reply} ->
+              %{state | client_query_results: :gb_trees.enter(query_time, {from, reply}, state.client_query_results)}
 
-    {:noreply, state}
+            :noreply ->
+              %{state | pending_parallel_queries: MapSet.put(state.pending_parallel_queries, from)}
+          end
+        end,
+        [:craft, :machine, :user, :handle_query],
+        %{quorum_read: true, linearizable: true})
+
+      {:noreply, state}
+    end
   end
 
   # only the leader can process linearizable queries
@@ -651,8 +663,44 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, {:eventual, :leader}, query}, from, state) do
-    if state.role == :leader do
-      Logger.debug("executing query", logger_metadata(trace: {:query, :leader_eventual, from, query}))
+    if dead_local_process?(from) do
+      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+
+      {:noreply, state}
+    else
+      if state.role == :leader do
+        Logger.debug("executing query", logger_metadata(trace: {:query, :leader_eventual, from, query}))
+
+        time(fn ->
+          case state.module.handle_query(query, {:direct, from}, state.private) do
+            {:reply, reply} ->
+              {:reply, reply, state}
+
+            :noreply ->
+              {:noreply, state}
+          end
+        end,
+        [:craft, :machine, :user, :handle_query],
+        %{eventual: true})
+      else
+        case MemberCache.get(state.name) do
+          {:ok, %GroupStatus{leader: leader}} when not is_nil(leader) ->
+            {:reply, {:error, {:not_leader, leader}}, state}
+
+          _ ->
+            {:reply, {:error, :unknown_leader}, state}
+        end
+      end
+    end
+  end
+
+  def handle_call({:query, :eventual, query}, from, state) do
+    if dead_local_process?(from) do
+      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+
+      {:noreply, state}
+    else
+      Logger.debug("executing query", logger_metadata(trace: {:query, :eventual, :quorum_read, from, query}))
 
       time(fn ->
         case state.module.handle_query(query, {:direct, from}, state.private) do
@@ -665,31 +713,7 @@ defmodule Craft.Machine do
       end,
       [:craft, :machine, :user, :handle_query],
       %{eventual: true})
-    else
-      case MemberCache.get(state.name) do
-        {:ok, %GroupStatus{leader: leader}} when not is_nil(leader) ->
-          {:reply, {:error, {:not_leader, leader}}, state}
-
-        _ ->
-          {:reply, {:error, :unknown_leader}, state}
-      end
     end
-  end
-
-  def handle_call({:query, :eventual, query}, from, state) do
-    Logger.debug("executing query", logger_metadata(trace: {:query, :eventual, :quorum_read, from, query}))
-
-    time(fn ->
-      case state.module.handle_query(query, {:direct, from}, state.private) do
-        {:reply, reply} ->
-          {:reply, reply, state}
-
-        :noreply ->
-          {:noreply, state}
-      end
-    end,
-    [:craft, :machine, :user, :handle_query],
-    %{eventual: true})
   end
 
   def handle_call({{:query_reply, query_time, reply}, query_from}, _from, state) do
@@ -866,47 +890,53 @@ defmodule Craft.Machine do
     # our last_applied may have incremented beyond the result returned by the leader while we were waiting, this is safe, because our last_applied will
     # never exceed the leader's current last_applied (which is delivered via heartbeat).
     state =
-      case leader_last_applied_index_reply do
-        {:ok, leader_last_applied_index} ->
-          if state.last_applied >= leader_last_applied_index do
-            time(fn ->
-              case state.module.handle_query(query, {:direct, from}, state.private) do
-                {:reply, reply} ->
-                  Logger.debug("immediately executing read-index query", logger_metadata(trace: {:sending_read_index_response, %{from: from, query: query, result: reply}}))
-                  GenServer.reply(from, reply)
+      if dead_local_process?(from) do
+        Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
-                :noreply ->
-                  :noop
-              end
-            end,
-            [:craft, :machine, :user, :handle_query],
-            %{linearizable: true, follower_read: true})
+        state
+      else
+        case leader_last_applied_index_reply do
+          {:ok, leader_last_applied_index} ->
+            if state.last_applied >= leader_last_applied_index do
+              time(fn ->
+                case state.module.handle_query(query, {:direct, from}, state.private) do
+                  {:reply, reply} ->
+                    Logger.debug("immediately executing read-index query", logger_metadata(trace: {:sending_read_index_response, %{from: from, query: query, result: reply}}))
+                    GenServer.reply(from, reply)
+
+                  :noreply ->
+                    :noop
+                end
+              end,
+              [:craft, :machine, :user, :handle_query],
+              %{linearizable: true, follower_read: true})
+
+              state
+            else
+              Logger.debug("enqueueing read-index query", logger_metadata(trace: {:enqueuing_read_index_response, %{from: from, query: query, last_applied: state.last_applied, wait_until_index: leader_last_applied_index}}))
+              # enqueue query to run when we see the read-index
+              queries_at_index =
+                case :gb_trees.lookup(leader_last_applied_index, state.read_index_queries) do
+                  :none ->
+                    MapSet.new([{from, query}])
+
+                  {:value, queries_at_index} ->
+                    MapSet.put(queries_at_index, {from, query})
+                end
+
+              %{state | read_index_queries: :gb_trees.enter(leader_last_applied_index, queries_at_index, state.read_index_queries)}
+            end
+
+          {:error, _} = error ->
+            GenServer.reply(from, error)
 
             state
-          else
-            Logger.debug("enqueueing read-index query", logger_metadata(trace: {:enqueuing_read_index_response, %{from: from, query: query, last_applied: state.last_applied, wait_until_index: leader_last_applied_index}}))
-            # enqueue query to run when we see the read-index
-            queries_at_index =
-              case :gb_trees.lookup(leader_last_applied_index, state.read_index_queries) do
-                :none ->
-                  MapSet.new([{from, query}])
 
-                {:value, queries_at_index} ->
-                  MapSet.put(queries_at_index, {from, query})
-              end
+          {:error, _, _} = error ->
+            GenServer.reply(from, error)
 
-            %{state | read_index_queries: :gb_trees.enter(leader_last_applied_index, queries_at_index, state.read_index_queries)}
-          end
-
-        {:error, _} = error ->
-          GenServer.reply(from, error)
-
-          state
-
-        {:error, _, _} = error ->
-          GenServer.reply(from, error)
-
-          state
+            state
+        end
       end
 
     {:noreply, %{state | read_index_tasks: Map.delete(state.read_index_tasks, ref)}}
@@ -1034,7 +1064,7 @@ defmodule Craft.Machine do
   end
 
   defp do_idle_work(%State{mode: :write_optimized} = state) do
-    range_end = min(state.apply_up_to, state.last_applied + Consensus.maximum_entries_per_heartbeat())
+    range_end = min(state.apply_up_to, state.last_applied + (Consensus.maximum_entries_per_heartbeat() / 10))
     range = state.last_applied+1..range_end//1
 
     cond do
@@ -1131,4 +1161,8 @@ defmodule Craft.Machine do
 
   defp assert_not_nil!(nil), do: raise "private is nil"
   defp assert_not_nil!(_), do: :noop
+
+  # load-shed queries from dead local processes, since there's nobody listening for the response
+  defp dead_local_process?({pid, _ref}) when node(pid) != node(), do: false
+  defp dead_local_process?({pid, _ref}), do: not Process.alive?(pid)
 end
