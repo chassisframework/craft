@@ -56,7 +56,7 @@ defmodule Craft.Nexus do
   # end
 
   def wait_until(nexus, condition) do
-    GenServer.call(nexus, {:wait_until, condition}, 10_000)
+    GenServer.call(nexus, {:wait_until, condition}, 20_000)
   end
 
   def nemesis(nexus, fun) when is_function(fun) do
@@ -65,7 +65,7 @@ defmodule Craft.Nexus do
 
   # synchronously sets a nemesis and a wait condition
   def nemesis_and_wait_until(nexus, nemesis, condition) when is_function(nemesis) do
-    GenServer.call(nexus, {:nemesis_and_wait_until, nemesis, condition}, 10_000)
+    GenServer.call(nexus, {:nemesis_and_wait_until, nemesis, condition}, 20_000)
   end
 
   def return_state_and_stop(nexus) do

@@ -45,7 +45,7 @@ defmodule Craft.Machine do
     @callback prepare_to_receive_snapshot(private()) :: {:ok, private()}
     @callback receive_snapshot(data_dir(), private()) :: private()
     @callback backup(to_directory :: Path.t(), private()) :: :ok | {:error, any()}
-    @callback close(private()) :: private()
+    @callback close(private()) :: ignored :: any()
   end
 
   defmodule LogStoredMachine do
