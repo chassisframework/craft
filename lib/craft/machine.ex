@@ -274,7 +274,7 @@ defmodule Craft.Machine do
       Process.flag(:trap_exit, true)
 
       receive do
-        {:EXIT, ^me, _reason} -> 
+        {:EXIT, ^me, _reason} ->
           if function_exported?(module, :close, 1) do
             module.close(private)
           end
@@ -392,18 +392,22 @@ defmodule Craft.Machine do
 
         # answer follower read-index queries
         for {from, query} <- read_index_queries_to_execute do
-          time(fn ->
-            case state.module.handle_query(query, {:direct, from}, state.private) do
-              {:reply, reply} ->
-                Logger.debug("executing read-index query", logger_metadata(trace: {:sending_read_index_response, %{from: from, query: query, result: reply}}))
-                GenServer.reply(from, reply)
+          if dead_local_process?(from) do
+            Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :read_index, from, query}))
+          else
+            time(fn ->
+              case state.module.handle_query(query, {:direct, from}, state.private) do
+                {:reply, reply} ->
+                  Logger.debug("executing read-index query", logger_metadata(trace: {:sending_read_index_response, %{from: from, query: query, result: reply}}))
+                  GenServer.reply(from, reply)
 
-              :noreply ->
-                :noop
-            end
-          end,
-          [:craft, :machine, :user, :handle_query],
-          %{linearizable: true, follower_read: true})
+                :noreply ->
+                  :noop
+              end
+            end,
+            [:craft, :machine, :user, :handle_query],
+            %{linearizable: true, follower_read: true})
+          end
         end
 
         state
@@ -478,7 +482,7 @@ defmodule Craft.Machine do
   #
   # idleness from a write perspective, still triggers if there are ongoing reads, otherwise
   # continuous reads would prevent snapshotting indefinitely, which is bad.
-  # 
+  #
   @impl true
   def handle_cast({:idle, should_snapshot?}, state) do
     state = %{state | should_snapshot?: should_snapshot?, idle: true}
@@ -639,25 +643,30 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, :linearizable, :follower, query}, from, state) do
-    Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :follower, :read_index, from, query}))
+    if dead_local_process?(from) do
+      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
 
-    # avoids copying `state` into the task
-    name = state.name
-    read_index_task =
-      Task.async(fn ->
-        Craft.Raft.with_leader_redirect(name, fn node ->
-          call(name, node, :get_last_applied_index, 5_000)
+      {:noreply, state}
+    else
+      Logger.debug("executing query", logger_metadata(trace: {:query, :linearizable, :follower, :read_index, from, query}))
+
+      # avoids copying `state` into the task
+      name = state.name
+      read_index_task =
+        Task.async(fn ->
+          Craft.Raft.with_leader_redirect(name, fn node ->
+            call(name, node, :get_last_applied_index, 5_000)
+          end)
         end)
-      end)
 
-    # write-optimized machine has unapplied commands
-    state = apply_outstanding_entries(state)
+      # write-optimized machine has unapplied commands
+      state = apply_outstanding_entries(state)
 
-    state = %{state | read_index_tasks: Map.put(state.read_index_tasks, read_index_task.ref, {from, query})}
+      state = %{state | read_index_tasks: Map.put(state.read_index_tasks, read_index_task.ref, {from, query})}
 
-    # continued in handle_info/2 when Task returns
-
-    {:noreply, state}
+      # continued in handle_info/2 when Task returns
+      {:noreply, state}
+    end
   end
 
   def handle_call({:query, {:eventual, :leader}, query}, from, state) do
@@ -889,7 +898,7 @@ defmodule Craft.Machine do
     # never exceed the leader's current last_applied (which is delivered via heartbeat).
     state =
       if dead_local_process?(from) do
-        Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+        Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :read_index, from, query}))
 
         state
       else
@@ -1036,7 +1045,7 @@ defmodule Craft.Machine do
       else
         state
       end
- 
+
     {last_applied, _} = List.last(entries)
 
     update_last_applied(state, last_applied)
