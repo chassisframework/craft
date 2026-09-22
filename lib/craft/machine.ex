@@ -15,7 +15,7 @@ defmodule Craft.Machine do
   alias Craft.SnapshotServer.RemoteFile
   alias Craft.RPC
 
-  import Craft.Tracing, only: [logger_metadata: 1, time: 3, time: 4]
+  import Craft.Tracing, only: [logger_metadata: 1, time: 3, time: 4, telemetry: 3]
   import Craft.Application, only: [via: 2, lookup: 2]
 
   require Logger
@@ -561,13 +561,22 @@ defmodule Craft.Machine do
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader, waiting_for_first_commit: waiting} = state) when waiting != false do
     Logger.debug("rejecting linearizable query, not ready", logger_metadata(trace: {:query, :linearizable, :rejected_not_ready, from, query}))
 
+    telemetry([:craft, :machine, :user, :handle_query],
+      %{},
+      %{linearizable: true, result: :rejected_not_ready})
+
     {:reply, {:error, :not_ready_for_queries}, state}
   end
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader, global_clock: global_clock} = state) when not is_nil(global_clock) do
+    telemetry_event = [:craft, :machine, :user, :handle_query]
+    tags = %{type: :lease, lease_read: true, linearizable: true}
+
     if Leases.holding_lease?(state.name) do
       if dead_local_process?(from) do
         Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+
+        telemetry(telemetry_event, %{}, Map.put(tags, :result, :shed))
 
         {:noreply, state}
       else
@@ -585,17 +594,23 @@ defmodule Craft.Machine do
               {:noreply, state}
           end
         end,
-        [:craft, :machine, :user, :handle_query],
-        %{lease_read: true, linearizable: true})
+          telemetry_event,
+          Map.put(tags, :result, :handled))
       end
     else
+      telemetry(telemetry_event, %{}, Map.put(tags, :result, :not_leaseholder))
       {:reply, {:error, :not_leaseholder}, state}
     end
   end
 
   def handle_call({:query, :linearizable, query}, from, %State{role: :leader} = state) do
+    telemetry_event = [:craft, :machine, :user, :handle_query]
+    tags = %{type: :quorum, quorum_read: true, linearizable: true}
+
     if dead_local_process?(from) do
-      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :quorum_read, from, query}))
+
+      telemetry(telemetry_event, %{}, Map.put(tags, :result, :shed))
 
       {:noreply, state}
     else
@@ -616,8 +631,8 @@ defmodule Craft.Machine do
               %{state | pending_parallel_queries: MapSet.put(state.pending_parallel_queries, from)}
           end
         end,
-        [:craft, :machine, :user, :handle_query],
-        %{quorum_read: true, linearizable: true})
+          telemetry_event,
+          Map.put(tags, :result, :handled))
 
       {:noreply, state}
     end
@@ -643,8 +658,12 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, :linearizable, :follower, query}, from, state) do
+    telemetry_event = [:craft, :machine, :user, :handle_query]
+    tags = %{type: :index, linearizable: true}
+
     if dead_local_process?(from) do
-      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :read_index, from, query}))
+      telemetry(telemetry_event, %{}, Map.put(tags, :result, :shed))
 
       {:noreply, state}
     else
@@ -663,6 +682,7 @@ defmodule Craft.Machine do
       state = apply_outstanding_entries(state)
 
       state = %{state | read_index_tasks: Map.put(state.read_index_tasks, read_index_task.ref, {from, query})}
+      telemetry(telemetry_event, %{}, Map.put(tags, :result, :handled))
 
       # continued in handle_info/2 when Task returns
       {:noreply, state}
@@ -670,8 +690,13 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, {:eventual, :leader}, query}, from, state) do
+    telemetry_event = [:craft, :machine, :user, :handle_query]
+    tags = %{type: :leader_eventual, linearizable: true, eventual: true}
+
     if dead_local_process?(from) do
-      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :leader_eventual, from, query}))
+
+      telemetry(telemetry_event, %{}, Map.put(tags, :result, :shed))
 
       {:noreply, state}
     else
@@ -687,8 +712,8 @@ defmodule Craft.Machine do
               {:noreply, state}
           end
         end,
-        [:craft, :machine, :user, :handle_query],
-        %{eventual: true})
+          telemetry_event,
+          Map.put(tags, :result, :handled))
       else
         case MemberCache.get(state.name) do
           {:ok, %GroupStatus{leader: leader}} when not is_nil(leader) ->
@@ -702,8 +727,13 @@ defmodule Craft.Machine do
   end
 
   def handle_call({:query, :eventual, query}, from, state) do
+    telemetry_event = [:craft, :machine, :user, :handle_query]
+    tags = %{type: :quorum, linearizable: true, eventual: true}
+
     if dead_local_process?(from) do
-      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :lease_read, from, query}))
+      Logger.debug("ignoring query from dead local process", logger_metadata(trace: {:query, :linearizable, :quorum_read, from, query}))
+
+      telemetry(telemetry_event, %{}, Map.put(tags, :result, :shed))
 
       {:noreply, state}
     else
@@ -718,8 +748,8 @@ defmodule Craft.Machine do
             {:noreply, state}
         end
       end,
-      [:craft, :machine, :user, :handle_query],
-      %{eventual: true})
+        telemetry_event,
+        Map.put(tags, :result, :handled))
     end
   end
 
