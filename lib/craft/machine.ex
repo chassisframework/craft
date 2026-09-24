@@ -107,7 +107,7 @@ defmodule Craft.Machine do
   def snapshot_info_and_last_applied(name) do
     name
     |> lookup(__MODULE__)
-    |> GenServer.call(:snapshot_info_and_last_applied)
+    |> GenServer.call(:snapshot_info_and_last_applied, :infinity)
   end
 
   def update_role(%ConsensusState{} = state, await_commit_index \\ nil) do
