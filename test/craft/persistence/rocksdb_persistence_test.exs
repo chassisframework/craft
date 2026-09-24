@@ -160,7 +160,7 @@ defmodule Craft.Persistence.RocksDBPersistenceTest do
 
   test "fetch_between/2", %{state: state} do
     state =
-      Enum.reduce(1..7, state, fn i, state ->
+      Enum.reduce(1..5, state, fn i, state ->
         RocksDBPersistence.append(state, %CommandEntry{command: i, term: i})
       end)
 
@@ -169,7 +169,7 @@ defmodule Craft.Persistence.RocksDBPersistenceTest do
              %CommandEntry{term: 3, command: 3},
              %CommandEntry{term: 4, command: 4},
              %CommandEntry{term: 5, command: 5},
-           ] = RocksDBPersistence.fetch_between(state, 2..5)
+           ] = RocksDBPersistence.fetch_between(state, 2..10)
   end
 
   test "truncate/3", %{state: state} do

@@ -97,7 +97,14 @@ defmodule Craft.Persistence.RocksDBPersistence do
     keys = Enum.map(index_range, &encode/1)
 
     :rocksdb.multi_get(state.db, state.log_cf, keys, [])
-    |> Enum.map(fn {:ok, entry} -> decode(entry) end)
+    |> Enum.reduce_while([], fn
+      {:ok, entry}, acc ->
+        {:cont, [decode(entry) | acc]}
+
+      :not_found, acc ->
+        {:halt, acc}
+    end)
+    |> Enum.reverse()
   end
 
   @impl true
