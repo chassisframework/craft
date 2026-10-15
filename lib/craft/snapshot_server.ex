@@ -94,17 +94,15 @@ defmodule Craft.SnapshotServer do
     receive do
       {:tcp, _port, filename} ->
         filename = String.trim_trailing(filename, "\n")
-        path = Path.join(data_dir, filename)
 
-        if File.exists?(path) do
-          {:ok, _bytes_sent} = :file.sendfile(path, client)
-        else
-          Logger.warning(~s|client requested non-existent file "#{filename}" from data_dir "#{data_dir}"|)
-
-          :ok = :gen_tcp.close(client)
+        case requested_file_path(data_dir, filename) do
+          {:ok, path} ->
+            {:ok, _bytes_sent} = :file.sendfile(path, client)
+            loop_receive(state)
+          error ->
+            :gen_tcp.close(client)
+            error
         end
-
-        loop_receive(state)
 
       {:tcp_closed, _} ->
         :ok
@@ -114,6 +112,26 @@ defmodule Craft.SnapshotServer do
 
     after 10_000 ->
       Logger.warning("client connection timed out waiting for request")
+    end
+  end
+
+  defp requested_file_path(data_dir, filename) do
+    case Path.safe_relative(filename, data_dir) do
+      {:ok, safe_filename} ->
+        path = Path.join(data_dir, safe_filename)
+
+        if File.exists?(path) do
+          {:ok, path}
+        else
+          Logger.warning(~s|client requested non-existent file "#{filename}" from data_dir "#{data_dir}"|)
+
+          {:error, :not_found}
+        end
+
+      :error ->
+        Logger.warning(~s|client requested unsafe path "#{filename}", refusing to serve it|)
+
+        {:error, :unsafe}
     end
   end
 end
