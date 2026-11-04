@@ -970,6 +970,7 @@ defmodule Craft.Machine do
     end
   end
 
+  defp apply_entries(state, []), do: state
   defp apply_entries(state, entries) do
     entries_by_type = Enum.group_by(entries, fn {_index, entry} -> entry.__struct__ end)
 
