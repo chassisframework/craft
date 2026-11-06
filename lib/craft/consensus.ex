@@ -1035,6 +1035,14 @@ defmodule Craft.Consensus do
     {:next_state, :lonely, data, []}
   end
 
+  def leader({:timeout, :leadership_transfer_failed}, :user_requested, %State{leader_state: %LeaderState{leadership_transfer: %LeadershipTransfer{from: {caller_pid, _ref} = id} = leadership_transfer}} = data) do
+    Logger.info("leadership transfer to #{inspect leadership_transfer.current_candidate} failed, resuming leadership", logger_metadata(data, trace: :leadership_transfer_failed))
+
+    send(caller_pid, {id, {:error, :leadership_transfer_failed}})
+
+    {:keep_state, put_in(data.leader_state.leadership_transfer, nil)}
+  end
+
   def leader(:cast, {:user_command, id, :transfer_leadership}, data) do
     to_node =
       data.members
