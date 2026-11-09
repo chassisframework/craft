@@ -78,7 +78,7 @@ defmodule Craft do
   @doc "Selects a new node to become the leader of the group."
   def transfer_leadership(name, to_node), do: backend().transfer_leadership(name, to_node)
 
-  @doc "Transfers leadership to a random follower."
+  @doc "Transfers leadership to the most caught-up follower."
   def transfer_leadership(name), do: backend().transfer_leadership(name)
 
   @doc "Writes a backup of the local member of the given group to the provided path."

@@ -1043,10 +1043,15 @@ defmodule Craft.Consensus do
   end
 
   def leader(:cast, {:user_command, id, :transfer_leadership}, data) do
-    to_node =
-      data.members
-      |> Members.other_voting_nodes()
-      |> Enum.random()
+    # transfer to most caught-up voting node
+    {to_node, _index} =
+      data.leader_state.match_indices
+      |> Enum.filter(fn {name, _index} ->
+        data.members
+        |> Members.other_voting_nodes()
+        |> MapSet.member?(name)
+      end)
+      |> Enum.max_by(fn {_name, index} -> index end)
 
     data = LeaderState.transfer_leadership(data, to_node, id)
 
