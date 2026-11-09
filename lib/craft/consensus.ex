@@ -718,7 +718,6 @@ defmodule Craft.Consensus do
 
     Message.request_vote(data, leadership_transfer: true)
 
-    # TODO: if election fails, send :error to leadership_transfer_request_id
     {:keep_state, data, [{:state_timeout, election_timeout(), :election_failed}]}
   end
 

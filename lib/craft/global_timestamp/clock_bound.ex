@@ -46,7 +46,7 @@ defmodule Craft.GlobalTimestamp.ClockBound do
     void_after = timespec_to_nanosecond({void_after_sec, void_after_nsec})
 
     # sandwich the wall-clock call between two montotonic clock calls, then later verify
-    # that the they're within the segment's validity window (as_of and void_after)
+    # that they're within the segment's validity window (as_of and void_after)
     monotonic_before = monotonic_time()
     real = :os.system_time(:nanosecond)
     monotonic_after = monotonic_time()
