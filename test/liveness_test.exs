@@ -89,6 +89,21 @@ defmodule Craft.LivenessTest do
     %{leader: ^leader, term: ^term} = wait_until(nexus, {Stability, :majority})
   end
 
+  nexus_test "leader resumes service after a leadership transfer to an unreachable node fails", %{nodes: nodes, name: name, nexus: nexus} do
+    %{leader: leader} = wait_until(nexus, {Stability, :all})
+
+    unreachable_node = Enum.random(nodes -- [leader])
+
+    nemesis(nexus, fn {:sent_msg, to, from, _msg} ->
+      if unreachable_node in [to, from], do: :drop, else: :forward
+    end)
+
+    assert {:error, _} = Craft.transfer_leadership(name, unreachable_node)
+
+    assert %{leader: ^leader} = wait_until(nexus, {Stability, :majority})
+    assert :ok = SimpleMachine.put(name, :a, 123)
+  end
+
   #                                                          1 - 2  5
   # initially, full mesh connectivity, then via nemesis ->    \ /
   #                                                           (3) - 4
