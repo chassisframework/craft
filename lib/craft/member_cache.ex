@@ -7,6 +7,8 @@ defmodule Craft.MemberCache do
   # cache instances on followers and clients pull from the leader on an interval. followers patch in the current leader from raft messages, as well
   # as their own maximum log index.
   #
+  # also responsible for starting icmp ping servers to known members
+  #
 
   use GenServer
 
@@ -103,10 +105,12 @@ defmodule Craft.MemberCache do
         if members[node()] do
           put_in(members, [node(), :log_index], latest_index)
         else
-         Map.put(members, node(), %{log_index: latest_index})
+          Map.put(members, node(), %{log_index: latest_index})
         end
 
       :ets.update_element(__MODULE__, state.name, {index(:members), members})
+
+      start_ping(members)
 
       :ok
     else
@@ -154,6 +158,8 @@ defmodule Craft.MemberCache do
     ]
 
     if :ets.update_element(__MODULE__, state.name, elements) do
+      start_ping(members)
+
       :ok
     else
       discover(state.name, [])
@@ -254,5 +260,11 @@ defmodule Craft.MemberCache do
       commit_index: group_status(record, :commit_index),
       current_term: group_status(record, :current_term)
     }
+  end
+
+  defp start_ping(members) do
+    for node <- Map.keys(members) do
+      Craft.PingSupervisor.start_ping(node)
+    end
   end
 end

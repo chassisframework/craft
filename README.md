@@ -23,6 +23,7 @@ features:
 - fast snapshot transfer via sendfile sysctl
 - linearizable follower reads via read-index
 - write-optimized mode
+- icmp echo network monitoring
 
 telemetry events:
 ```elixir
@@ -57,6 +58,7 @@ telemetry events:
   [:craft, :machine, :user, :handle_command],
   [:craft, :machine, :user, :handle_commands],
   [:craft, :machine, :user, :handle_query],
-  [:craft, :machine, :user, :snapshot]
+  [:craft, :machine, :user, :snapshot],
+  [:craft, :ping]
 ]
 ```
