@@ -15,6 +15,8 @@ defmodule Craft.Application do
       {Task.Supervisor, name: Craft.SnapshotServer.Supervisor},
       {DynamicSupervisor, [strategy: :one_for_one, name: Craft.Supervisor]},
       {Registry, keys: :unique, name: Craft.Registry},
+      Craft.PingListener,
+      {DynamicSupervisor, [strategy: :one_for_one, name: Craft.PingSupervisor]},
       Craft.MemberCache,
       Craft.Sandbox.Manager
     ]
