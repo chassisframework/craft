@@ -279,7 +279,8 @@ defmodule Craft do
      [:craft, :quorum, :succeeded],
      [:craft, :quorum, :miss],
      [:craft, :check_quorum, :succeeded],
-     [:craft, :check_quorum, :failed]
+     [:craft, :check_quorum, :failed],
+     [:craft, :ping]
    ]
 
   def telemetry_events do
